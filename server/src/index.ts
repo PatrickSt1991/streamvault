@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'url';
 import { Readable } from 'node:stream';
 import { randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import {
   getChannels, getChannelById, getChannelsByIds, getChannelsByGroup, getChannelCountByGroup, getGroups, getRegions,
   getPrograms, getProgramsByChannelIds, getProgramsByChannel, saveProgramsForChannels,
@@ -627,6 +628,60 @@ app.get('/api/stream/:channelId', async (req, res) => {
         return `/api/proxy?url=${encodeURIComponent(baseUrl + line)}`;
       });
       res.send(rewritten);
+    } else if (isLive) {
+      // Live MPEG-TS: pipe through ffmpeg with `-c copy -sn` to drop any
+      // subtitle/teletext packets. AVPlay on Tizen renders DVB and teletext
+      // subs natively without exposing them as a TEXT track, and
+      // setSilentSubtitle does not mute them. Stripping the packets here is
+      // the only reliable way to suppress them. -c copy = no transcoding,
+      // so CPU cost is just demuxer/muxer overhead.
+      logger.info(`Stream proxy: ffmpeg -sn pipe for ${channelId} (content-type: ${contentType})`);
+      if (!upstream.body) {
+        logger.error(`Stream proxy: no response body for ${channelId}`);
+        res.status(502).json({ error: 'No response body' });
+        return;
+      }
+      // ffmpeg's output length is unknown; never forward upstream Content-Length.
+      res.removeHeader('Content-Length');
+
+      const nodeStream = Readable.fromWeb(upstream.body as import('node:stream/web').ReadableStream);
+      const ff = spawn('ffmpeg', [
+        '-hide_banner', '-loglevel', 'error',
+        '-fflags', '+nobuffer+discardcorrupt',
+        '-i', 'pipe:0',
+        '-map', '0:v', '-map', '0:a?',
+        '-c', 'copy', '-sn',
+        '-f', 'mpegts', 'pipe:1',
+      ], { stdio: ['pipe', 'pipe', 'pipe'] });
+
+      ff.stderr.on('data', (chunk) => {
+        const msg = chunk.toString().trim();
+        if (msg) logger.warn(`ffmpeg[${channelId}]: ${msg}`);
+      });
+      ff.on('error', (err) => {
+        logger.error(`ffmpeg spawn failed for ${channelId}: ${err.message}`);
+        if (!res.headersSent) res.status(500).json({ error: 'Stream processing failed' });
+        nodeStream.destroy();
+      });
+      ff.on('exit', (code, signal) => {
+        logger.info(`ffmpeg exited ${channelId} code=${code} signal=${signal}`);
+      });
+
+      // Upstream → ffmpeg stdin (don't end ff.stdin via auto-pipe close on
+      // upstream EOF will close stdin, which is what we want for live drops)
+      nodeStream.pipe(ff.stdin);
+      ff.stdout.pipe(res);
+
+      // Suppress EPIPE noise when the other side of these pipes closes first
+      ff.stdin.on('error', () => {});
+      ff.stdout.on('error', () => {});
+      nodeStream.on('error', (err) => logger.warn(`upstream error ${channelId}: ${err.message}`));
+
+      req.on('close', () => {
+        logger.info(`Stream proxy: client disconnected from ${channelId}`);
+        nodeStream.destroy();
+        if (!ff.killed) ff.kill('SIGKILL');
+      });
     } else {
       logger.info(`Stream proxy: piping binary stream for ${channelId} (content-type: ${contentType}, content-length: ${contentLength || 'unknown'})`);
       if (!upstream.body) {
