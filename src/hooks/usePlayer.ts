@@ -275,7 +275,7 @@ export function usePlayer(): {
             setError('Playback error');
           },
           onsubtitlechange: (_duration: number, text: string) => {
-            tizenPlayer.onSubtitleText?.(text);
+            tizenPlayer.emitSubtitleText(text);
           },
           onstreamcompleted: () => {
             log.info('AVPlay: stream completed');

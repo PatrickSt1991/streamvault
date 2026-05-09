@@ -63,6 +63,7 @@ interface AVPlayManager {
   getCurrentTime(): number;
   setSubtitlePosition?(position: number): void;
   getSubtitleLanguage?(): string;
+  setSilentSubtitle?(onoff: boolean): void;
   setBufferingParam?(
     option: AVPlayBufferOption,
     type: AVPlayBufferType,

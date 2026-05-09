@@ -53,22 +53,8 @@ export class TizenPlayer implements PlayerBackend {
         TizenPlayer.displayRectSet = true;
       }
 
-      // Set up event listeners
-      webapis.avplay.setListener({
-        onerror: () => {
-          this.prepared = false;
-        },
-        onstreamcompleted: () => {
-          this.prepared = false;
-        },
-        onsubtitlechange: (_duration: number, text: string) => {
-          if (!this.subtitlesSuppressed) {
-            this.onSubtitleText?.(text);
-          }
-        },
-      });
-
       this.subtitleTracks = [{ index: 0, language: 'default', label: 'Subtitles' }];
+      this.subtitlesSuppressed = false;
 
       // Prepare asynchronously and auto-play on success
       webapis.avplay.prepareAsync(
@@ -195,9 +181,19 @@ export class TizenPlayer implements PlayerBackend {
 
   setSubtitleTrack(index: number): void {
     this.subtitlesSuppressed = index === -1;
+    try {
+      webapis.avplay.setSilentSubtitle?.(this.subtitlesSuppressed);
+    } catch (err) {
+      toast(`setSilentSubtitle failed: ${err}`);
+    }
     if (this.subtitlesSuppressed) {
       this.onSubtitleText?.('');
     }
+  }
+
+  emitSubtitleText(text: string): void {
+    if (this.subtitlesSuppressed) return;
+    this.onSubtitleText?.(text);
   }
 
   /**
