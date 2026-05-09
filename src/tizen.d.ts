@@ -64,6 +64,17 @@ interface AVPlayManager {
   setSubtitlePosition?(position: number): void;
   getSubtitleLanguage?(): string;
   setSilentSubtitle?(onoff: boolean): void;
+  getCurrentStreamInfo?(): Array<{
+    type: 'AUDIO' | 'VIDEO' | 'TEXT';
+    index: number;
+    extra_info?: string;
+  }>;
+  getTotalTrackInfo?(): Array<{
+    type: 'AUDIO' | 'VIDEO' | 'TEXT';
+    index: number;
+    extra_info?: string;
+  }>;
+  setSelectTrack?(type: 'AUDIO' | 'VIDEO' | 'TEXT', index: number): void;
   setBufferingParam?(
     option: AVPlayBufferOption,
     type: AVPlayBufferType,

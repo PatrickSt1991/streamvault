@@ -295,6 +295,7 @@ export function usePlayer(): {
             avplay.play();
             setStatus('playing');
             setSubtitleTracks(tizenPlayer.getSubtitleTracks());
+            setCurrentSubtitleIndex(0);
             startBgProgressTracking();
             setupMediaSession(channel.name);
           },

@@ -32,7 +32,9 @@ export interface PlayerBackend {
  */
 export class TizenPlayer implements PlayerBackend {
   private prepared: boolean = false;
-  private subtitleTracks: SubtitleTrack[] = [];
+  private subtitleTracks: SubtitleTrack[] = [
+    { index: 0, language: 'default', label: 'Subtitles' },
+  ];
   private subtitlesSuppressed: boolean = false;
   private static displayRectSet: boolean = false;
   onSubtitleText?: (text: string) => void;
@@ -181,11 +183,30 @@ export class TizenPlayer implements PlayerBackend {
 
   setSubtitleTrack(index: number): void {
     this.subtitlesSuppressed = index === -1;
+    let silentOk = false;
     try {
       webapis.avplay.setSilentSubtitle?.(this.subtitlesSuppressed);
+      silentOk = true;
     } catch (err) {
       toast(`setSilentSubtitle failed: ${err}`);
     }
+    // Some firmwares ignore setSilentSubtitle for in-stream subs; also flip
+    // the TEXT track selection. Disabling = pick an out-of-range index;
+    // re-enabling = pick the first TEXT track from the stream info.
+    try {
+      const tracks = webapis.avplay.getTotalTrackInfo?.() ?? [];
+      const textTracks = tracks.filter((t) => t.type === 'TEXT');
+      if (textTracks.length > 0) {
+        const target = this.subtitlesSuppressed ? -1 : textTracks[0].index;
+        webapis.avplay.setSelectTrack?.('TEXT', target);
+      }
+    } catch (err) {
+      toast(`setSelectTrack(TEXT) failed: ${err}`);
+    }
+    toast(
+      `subs ${this.subtitlesSuppressed ? 'off' : 'on'}` +
+        (silentOk ? '' : ' (no setSilentSubtitle)')
+    );
     if (this.subtitlesSuppressed) {
       this.onSubtitleText?.('');
     }
