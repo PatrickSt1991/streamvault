@@ -645,12 +645,20 @@ app.get('/api/stream/:channelId', async (req, res) => {
       res.removeHeader('Content-Length');
 
       const nodeStream = Readable.fromWeb(upstream.body as import('node:stream/web').ReadableStream);
+      // CEA-608/708 closed captions ride inside H.264 SEI NAL units (type 6)
+      // and HEVC SEI (types 39/40), so `-sn` alone won't drop them — that
+      // flag only filters separate subtitle PIDs. `filter_units` is a
+      // bitstream filter that strips matching NAL types from a copied
+      // stream without re-encoding. List both H.264 and HEVC SEI types so
+      // the same command works regardless of codec; non-matching types are
+      // silently ignored.
       const ff = spawn('ffmpeg', [
-        '-hide_banner', '-loglevel', 'error',
+        '-hide_banner', '-loglevel', 'warning',
         '-fflags', '+nobuffer+discardcorrupt',
         '-i', 'pipe:0',
         '-map', '0:v', '-map', '0:a?',
         '-c', 'copy', '-sn',
+        '-bsf:v', 'filter_units=remove_types=6|39|40',
         '-f', 'mpegts', 'pipe:1',
       ], { stdio: ['pipe', 'pipe', 'pipe'] });
 
