@@ -647,7 +647,7 @@ export default function Player() {
         )}
 
         {/* Subtitle text overlay */}
-        {subtitleText && (
+        {currentSubtitleIndex !== -1 && subtitleText && (
           <div className="absolute bottom-[60px] lg:bottom-20 left-1/2 -translate-x-1/2 max-w-[80%] py-2 px-4 bg-black/75 rounded text-20 lg:text-28 text-center z-[2]">
             <span>{subtitleText}</span>
           </div>

@@ -183,50 +183,15 @@ export class TizenPlayer implements PlayerBackend {
 
   setSubtitleTrack(index: number): void {
     this.subtitlesSuppressed = index === -1;
-    const wantOff = this.subtitlesSuppressed;
-    const debug: string[] = [];
-
-    // Probe: which APIs exist?
-    debug.push(`hasSilent=${typeof webapis.avplay.setSilentSubtitle}`);
-    debug.push(`hasGetTotal=${typeof webapis.avplay.getTotalTrackInfo}`);
-    debug.push(`hasSelect=${typeof webapis.avplay.setSelectTrack}`);
-
-    // Probe: what tracks does the stream report?
+    // Best-effort native mute. Affects external/in-stream text subs only;
+    // CEA-608/708 closed captions are controlled by the TV's accessibility
+    // settings and cannot be disabled from a web app on Tizen.
     try {
-      const tracks = webapis.avplay.getTotalTrackInfo?.() ?? [];
-      const summary = tracks
-        .map((t) => `${t.type}#${t.index}`)
-        .join(',');
-      debug.push(`tracks=[${summary || 'empty'}]`);
-
-      const textTracks = tracks.filter((t) => t.type === 'TEXT');
-      if (textTracks.length > 0) {
-        try {
-          if (wantOff) {
-            // Off: setSilentSubtitle path is the canonical one for in-stream
-            // text. Don't mess with setSelectTrack(-1) — it throws on most
-            // firmwares.
-          } else {
-            webapis.avplay.setSelectTrack?.('TEXT', textTracks[0].index);
-          }
-        } catch (err) {
-          debug.push(`selectTrack-throw=${err}`);
-        }
-      }
+      webapis.avplay.setSilentSubtitle?.(this.subtitlesSuppressed);
     } catch (err) {
-      debug.push(`getTotal-throw=${err}`);
+      toast(`setSilentSubtitle failed: ${err}`);
     }
-
-    try {
-      webapis.avplay.setSilentSubtitle?.(wantOff);
-      debug.push(`silent(${wantOff})=ok`);
-    } catch (err) {
-      debug.push(`silent-throw=${err}`);
-    }
-
-    toast(`subs ${wantOff ? 'off' : 'on'} | ${debug.join(' | ')}`);
-
-    if (wantOff) {
+    if (this.subtitlesSuppressed) {
       this.onSubtitleText?.('');
     }
   }
