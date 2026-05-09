@@ -183,31 +183,50 @@ export class TizenPlayer implements PlayerBackend {
 
   setSubtitleTrack(index: number): void {
     this.subtitlesSuppressed = index === -1;
-    let silentOk = false;
-    try {
-      webapis.avplay.setSilentSubtitle?.(this.subtitlesSuppressed);
-      silentOk = true;
-    } catch (err) {
-      toast(`setSilentSubtitle failed: ${err}`);
-    }
-    // Some firmwares ignore setSilentSubtitle for in-stream subs; also flip
-    // the TEXT track selection. Disabling = pick an out-of-range index;
-    // re-enabling = pick the first TEXT track from the stream info.
+    const wantOff = this.subtitlesSuppressed;
+    const debug: string[] = [];
+
+    // Probe: which APIs exist?
+    debug.push(`hasSilent=${typeof webapis.avplay.setSilentSubtitle}`);
+    debug.push(`hasGetTotal=${typeof webapis.avplay.getTotalTrackInfo}`);
+    debug.push(`hasSelect=${typeof webapis.avplay.setSelectTrack}`);
+
+    // Probe: what tracks does the stream report?
     try {
       const tracks = webapis.avplay.getTotalTrackInfo?.() ?? [];
+      const summary = tracks
+        .map((t) => `${t.type}#${t.index}`)
+        .join(',');
+      debug.push(`tracks=[${summary || 'empty'}]`);
+
       const textTracks = tracks.filter((t) => t.type === 'TEXT');
       if (textTracks.length > 0) {
-        const target = this.subtitlesSuppressed ? -1 : textTracks[0].index;
-        webapis.avplay.setSelectTrack?.('TEXT', target);
+        try {
+          if (wantOff) {
+            // Off: setSilentSubtitle path is the canonical one for in-stream
+            // text. Don't mess with setSelectTrack(-1) — it throws on most
+            // firmwares.
+          } else {
+            webapis.avplay.setSelectTrack?.('TEXT', textTracks[0].index);
+          }
+        } catch (err) {
+          debug.push(`selectTrack-throw=${err}`);
+        }
       }
     } catch (err) {
-      toast(`setSelectTrack(TEXT) failed: ${err}`);
+      debug.push(`getTotal-throw=${err}`);
     }
-    toast(
-      `subs ${this.subtitlesSuppressed ? 'off' : 'on'}` +
-        (silentOk ? '' : ' (no setSilentSubtitle)')
-    );
-    if (this.subtitlesSuppressed) {
+
+    try {
+      webapis.avplay.setSilentSubtitle?.(wantOff);
+      debug.push(`silent(${wantOff})=ok`);
+    } catch (err) {
+      debug.push(`silent-throw=${err}`);
+    }
+
+    toast(`subs ${wantOff ? 'off' : 'on'} | ${debug.join(' | ')}`);
+
+    if (wantOff) {
       this.onSubtitleText?.('');
     }
   }
