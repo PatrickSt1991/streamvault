@@ -204,7 +204,16 @@ export function usePlayer(): {
         const avplay = webapis.avplay;
         clearAvplayStallTimer();
         avplay.close();
-        avplay.open(channel.url);
+        // Route through the server proxy so live streams get subtitle PIDs
+        // stripped via ffmpeg. Recordings have a server-relative URL; live
+        // and VOD go through /api/stream/. Episodes carry the URL as a
+        // query param via getStreamUrl().
+        const isRecording = channel.id.startsWith('recording_');
+        const tizenPlayUrl = isRecording
+          ? `${useChannelStore.getState().apiBaseUrl}${channel.url}`
+          : getStreamUrl(channel.id, channel.url);
+        log.info(`AVPlay: opening ${tizenPlayUrl}`);
+        avplay.open(tizenPlayUrl);
         avplay.setDisplayRect(0, 0, 1920, 1080);
 
         // Bigger buffer for live MPEG-TS over HTTP — Tizen's defaults stall
