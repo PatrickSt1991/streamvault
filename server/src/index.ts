@@ -628,13 +628,14 @@ app.get('/api/stream/:channelId', async (req, res) => {
         return `/api/proxy?url=${encodeURIComponent(baseUrl + line)}`;
       });
       res.send(rewritten);
-    } else if (isLive) {
-      // Live MPEG-TS: pipe through ffmpeg with `-c copy -sn` to drop any
-      // subtitle/teletext packets. AVPlay on Tizen renders DVB and teletext
-      // subs natively without exposing them as a TEXT track, and
-      // setSilentSubtitle does not mute them. Stripping the packets here is
-      // the only reliable way to suppress them. -c copy = no transcoding,
-      // so CPU cost is just demuxer/muxer overhead.
+    } else if (isLive && req.query.subs !== '1') {
+      // Live MPEG-TS: pipe through ffmpeg to drop subtitle PIDs (`-sn`) and
+      // CEA-608/708 SEI NAL units (filter_units bitstream filter). AVPlay
+      // on Tizen renders DVB/teletext subs and embedded captions natively
+      // without exposing controls to the web app. Stripping the packets
+      // and SEI here is the only reliable way to suppress them. `-c copy`
+      // = no transcoding, only demuxer/muxer overhead. Skip when the
+      // client opts in to keeping subs via `?subs=1`.
       logger.info(`Stream proxy: ffmpeg -sn pipe for ${channelId} (content-type: ${contentType})`);
       if (!upstream.body) {
         logger.error(`Stream proxy: no response body for ${channelId}`);

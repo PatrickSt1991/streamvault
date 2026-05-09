@@ -144,14 +144,15 @@ function stopPlayback() {
 // ---------------------------------------------------------------------------
 
 /** Build a proxied stream URL that goes through our server */
-export function getStreamUrl(channelId: string, directUrl?: string): string {
+export function getStreamUrl(channelId: string, directUrl?: string, keepSubs?: boolean): string {
   const apiBaseUrl = useChannelStore.getState().apiBaseUrl;
-  let url = `${apiBaseUrl}/api/stream/${encodeURIComponent(channelId)}`;
-  // For episodes not in DB, pass URL and type as query params
+  const params: string[] = [];
   if (directUrl && channelId.startsWith('episode_')) {
-    url += `?url=${encodeURIComponent(directUrl)}&type=series`;
+    params.push(`url=${encodeURIComponent(directUrl)}`, 'type=series');
   }
-  return url;
+  if (keepSubs) params.push('subs=1');
+  const query = params.length ? `?${params.join('&')}` : '';
+  return `${apiBaseUrl}/api/stream/${encodeURIComponent(channelId)}${query}`;
 }
 
 export function usePlayer(): {
@@ -172,6 +173,12 @@ export function usePlayer(): {
   const [currentSubtitleIndex, setCurrentSubtitleIndex] = useState(-1);
   const [subtitleText, setSubtitleText] = useState('');
   const playerRef = useRef<TizenPlayer | null>(null);
+  // True when the user has explicitly turned subs back on. Defaults to
+  // false because the server's live stream proxy strips embedded
+  // CEA-608/708 captions by default; setting this to true switches the
+  // proxy to pass-through mode. Persisted across stream changes within
+  // a session.
+  const keepSubsRef = useRef(false);
 
   const play = useCallback(() => {
     const channel = usePlayerStore.getState().currentChannel;
@@ -211,7 +218,7 @@ export function usePlayer(): {
         const isRecording = channel.id.startsWith('recording_');
         const tizenPlayUrl = isRecording
           ? `${useChannelStore.getState().apiBaseUrl}${channel.url}`
-          : getStreamUrl(channel.id, channel.url);
+          : getStreamUrl(channel.id, channel.url, keepSubsRef.current);
         log.info(`AVPlay: opening ${tizenPlayUrl}`);
         avplay.open(tizenPlayUrl);
         avplay.setDisplayRect(0, 0, 1920, 1080);
@@ -304,7 +311,7 @@ export function usePlayer(): {
             avplay.play();
             setStatus('playing');
             setSubtitleTracks(tizenPlayer.getSubtitleTracks());
-            setCurrentSubtitleIndex(0);
+            setCurrentSubtitleIndex(keepSubsRef.current ? 0 : -1);
             startBgProgressTracking();
             setupMediaSession(channel.name);
           },
@@ -501,8 +508,21 @@ export function usePlayer(): {
           : currentSubtitleIndex + 1;
 
     setCurrentSubtitleIndex(nextIndex);
-    playerRef.current?.setSubtitleTrack(nextIndex);
-  }, [subtitleTracks, currentSubtitleIndex]);
+
+    if (typeof webapis !== 'undefined' && webapis.avplay) {
+      // Tizen: subs are stripped server-side, so toggle the proxy mode
+      // and reopen the stream with the new URL. AVPlay's own subtitle
+      // controls don't reach embedded CC, so reload is the only path.
+      const wantSubs = nextIndex !== -1;
+      if (keepSubsRef.current !== wantSubs) {
+        keepSubsRef.current = wantSubs;
+        play();
+      }
+    } else {
+      // HTML5: text tracks are handled by the video element directly.
+      playerRef.current?.setSubtitleTrack(nextIndex);
+    }
+  }, [subtitleTracks, currentSubtitleIndex, play]);
 
   const togglePlay = useCallback(() => {
     if (typeof webapis !== 'undefined' && webapis.avplay) {
