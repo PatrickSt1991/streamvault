@@ -74,28 +74,34 @@ export default function SeriesDetail({ series }: SeriesDetailProps) {
 
     if (e.keyCode === KEY_CODES.BACK || e.keyCode === 27) {
       e.preventDefault();
+      e.stopPropagation();
       goBack();
       return;
     }
 
     if (e.keyCode === KEY_CODES.DOWN) {
       e.preventDefault();
+      e.stopPropagation();
       if (focusIndex < currentEpisodes.length - 1) {
         setFocusIndex(focusIndex + 1);
       }
     } else if (e.keyCode === KEY_CODES.UP) {
       e.preventDefault();
+      e.stopPropagation();
       if (focusIndex > 0) {
         setFocusIndex(focusIndex - 1);
       }
     } else if (e.keyCode === KEY_CODES.ENTER) {
       e.preventDefault();
+      e.stopPropagation();
       if (focusIndex >= 0 && focusIndex < currentEpisodes.length) {
         handlePlayEpisode(currentEpisodes[focusIndex]);
       }
     } else if (e.keyCode === KEY_CODES.LEFT) {
       e.preventDefault();
-      // Switch to previous season
+      // Stop propagation so App's main-level LEFT handler doesn't steal
+      // focus back to the sidebar — this page owns LEFT for season nav.
+      e.stopPropagation();
       if (info) {
         const seasonNums = Object.keys(info.episodes).map(Number).sort((a, b) => a - b);
         const idx = seasonNums.indexOf(selectedSeason);
@@ -106,7 +112,7 @@ export default function SeriesDetail({ series }: SeriesDetailProps) {
       }
     } else if (e.keyCode === KEY_CODES.RIGHT) {
       e.preventDefault();
-      // Switch to next season
+      e.stopPropagation();
       if (info) {
         const seasonNums = Object.keys(info.episodes).map(Number).sort((a, b) => a - b);
         const idx = seasonNums.indexOf(selectedSeason);
@@ -118,9 +124,13 @@ export default function SeriesDetail({ series }: SeriesDetailProps) {
     }
   }, [focusIndex, currentEpisodes, selectedSeason, info, handlePlayEpisode, goBack]);
 
-  // Focus current episode on render
+  // Focus current episode on render. Depend on currentEpisodes.length too
+  // so the effect re-runs once the fetch completes — otherwise the first
+  // render runs before episodes exist, focus silently misses, and the
+  // sidebar keeps the focus, swallowing all remote keys.
   useEffect(() => {
     if (MOBILE) return;
+    if (currentEpisodes.length === 0) return;
     requestAnimationFrame(() => {
       const list = episodeListRef.current;
       if (!list) return;
@@ -128,7 +138,7 @@ export default function SeriesDetail({ series }: SeriesDetailProps) {
       el?.focus({ preventScroll: true });
       el?.scrollIntoView({ block: 'nearest' });
     });
-  }, [focusIndex, selectedSeason]);
+  }, [focusIndex, selectedSeason, currentEpisodes.length]);
 
   if (loading) {
     return (
