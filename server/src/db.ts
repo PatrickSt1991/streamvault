@@ -19,31 +19,36 @@ function openDatabase(): InstanceType<typeof Database> {
   return instance;
 }
 
-// Integrity check — if corrupted, delete and recreate
+// Integrity check — if corrupted, quarantine and recreate.
+// NEVER delete user data: rename to .corrupt-<ts> so the operator can recover.
+function quarantineCorruptDb(reason: string): void {
+  try { db.close(); } catch { /* ignore */ }
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  for (const suffix of ['', '-shm', '-wal']) {
+    const file = DB_PATH + suffix;
+    if (fs.existsSync(file)) {
+      const quarantined = `${file}.corrupt-${ts}`;
+      try {
+        fs.renameSync(file, quarantined);
+        logger.error(`Quarantined corrupt DB file: ${file} -> ${quarantined}`);
+      } catch (e) {
+        logger.error(`Failed to quarantine ${file}: ${e instanceof Error ? e.message : e}`);
+      }
+    }
+  }
+  logger.error(`Creating fresh database after corruption. Reason: ${reason}`);
+  db = openDatabase();
+}
+
 try {
   const result = db.pragma('integrity_check') as { integrity_check: string }[];
   if (result[0]?.integrity_check !== 'ok') {
-    logger.error(`Database integrity check failed: ${JSON.stringify(result)}`);
-    db.close();
-    // Remove corrupted files and start fresh
-    for (const suffix of ['', '-shm', '-wal']) {
-      const file = DB_PATH + suffix;
-      if (fs.existsSync(file)) fs.unlinkSync(file);
-    }
-    logger.info('Removed corrupted database, creating fresh one');
-    db = openDatabase();
+    quarantineCorruptDb(`integrity_check returned: ${JSON.stringify(result)}`);
   } else {
     logger.info('Database integrity check passed');
   }
 } catch (err) {
-  logger.error(`Database integrity check error: ${err instanceof Error ? err.message : err}`);
-  try { db.close(); } catch { /* ignore */ }
-  for (const suffix of ['', '-shm', '-wal']) {
-    const file = DB_PATH + suffix;
-    if (fs.existsSync(file)) fs.unlinkSync(file);
-  }
-  logger.info('Removed corrupted database, creating fresh one');
-  db = openDatabase();
+  quarantineCorruptDb(`integrity_check threw: ${err instanceof Error ? err.message : err}`);
 }
 
 db.exec(`
@@ -165,6 +170,55 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_recordings_rule_id ON recordings(rule_id);
   CREATE INDEX IF NOT EXISTS idx_recording_rules_channel_id ON recording_rules(channel_id);
 `);
+
+// ---------- Lifecycle / backup helpers ----------
+
+const BACKUP_DIR = path.join(DATA_DIR, 'backups');
+const BACKUP_RETENTION = 7;
+
+export function closeDatabase(): void {
+  try {
+    db.pragma('wal_checkpoint(TRUNCATE)');
+  } catch (err) {
+    logger.warn(`WAL checkpoint on close failed: ${err instanceof Error ? err.message : err}`);
+  }
+  try {
+    db.close();
+    logger.info('Database closed cleanly');
+  } catch (err) {
+    logger.warn(`db.close() failed: ${err instanceof Error ? err.message : err}`);
+  }
+}
+
+export function backupDatabase(): string | null {
+  try {
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const stamp = new Date().toISOString().slice(0, 10);
+    const target = path.join(BACKUP_DIR, `streamvault-${stamp}.db`);
+    // VACUUM INTO refuses to overwrite — drop existing same-day backup first
+    if (fs.existsSync(target)) fs.unlinkSync(target);
+    db.exec(`VACUUM INTO '${target.replace(/'/g, "''")}'`);
+    logger.info(`Database backed up to ${target}`);
+
+    // Retention: keep newest BACKUP_RETENTION files
+    const files = fs.readdirSync(BACKUP_DIR)
+      .filter(f => f.startsWith('streamvault-') && f.endsWith('.db'))
+      .map(f => ({ f, mtime: fs.statSync(path.join(BACKUP_DIR, f)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime);
+    for (const old of files.slice(BACKUP_RETENTION)) {
+      try {
+        fs.unlinkSync(path.join(BACKUP_DIR, old.f));
+        logger.info(`Pruned old backup ${old.f}`);
+      } catch (e) {
+        logger.warn(`Failed to prune ${old.f}: ${e instanceof Error ? e.message : e}`);
+      }
+    }
+    return target;
+  } catch (err) {
+    logger.error(`Backup failed: ${err instanceof Error ? err.message : err}`);
+    return null;
+  }
+}
 
 // ---------- Config helpers ----------
 

@@ -16,6 +16,7 @@ import {
   getChannelsByContentTypeCursor, getChannelsByGroupCursor,
   insertRecording, updateRecording, deleteRecording, getRecording, getRecordings,
   insertRecordingRule, updateRecordingRule, deleteRecordingRule, getRecordingRules, getRecordingRule,
+  closeDatabase, backupDatabase,
 } from './db.js';
 import type { DBRecording } from './db.js';
 import { getStatus, sync, cancelSync, startupSync, startCrawl, cancelCrawl } from './sync.js';
@@ -1083,7 +1084,7 @@ app.get('/{*path}', (req, res) => {
 
 // ---------- Start ----------
 
-app.listen(PORT, '0.0.0.0', () => {
+const httpServer = app.listen(PORT, '0.0.0.0', () => {
   logger.info(`StreamVault server listening on http://0.0.0.0:${PORT}`);
   startupSync();
   // Start recording scheduler and recover any interrupted recordings
@@ -1093,4 +1094,37 @@ app.listen(PORT, '0.0.0.0', () => {
     logger.error(`Failed to recover recordings: ${err}`);
     startScheduler();
   });
+  // Initial backup on boot, then daily.
+  backupDatabase();
 });
+
+const BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const backupTimer = setInterval(() => { backupDatabase(); }, BACKUP_INTERVAL_MS);
+if (typeof backupTimer.unref === 'function') backupTimer.unref();
+
+// ---------- Graceful shutdown ----------
+
+let shuttingDown = false;
+function shutdown(signal: string): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info(`Received ${signal}, shutting down gracefully...`);
+  clearInterval(backupTimer);
+
+  const forceExit = setTimeout(() => {
+    logger.error('Shutdown grace period exceeded, forcing exit');
+    process.exit(1);
+  }, 8000);
+  forceExit.unref();
+
+  httpServer.close(err => {
+    if (err) logger.error(`HTTP server close error: ${err.message}`);
+    else logger.info('HTTP server closed');
+    closeDatabase();
+    clearTimeout(forceExit);
+    process.exit(0);
+  });
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
