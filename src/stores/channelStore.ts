@@ -21,7 +21,7 @@ interface ChannelState {
   channels: Channel[];
   programs: Program[];
   programsByChannel: Map<string, Program[]>;
-  categories: Category[];
+  categoriesByType: Record<string, Category[]>;
   groups: string[];
   regions: string[];
   contentTypeCounts: Record<string, number>;
@@ -120,7 +120,7 @@ export const useChannelStore = create<ChannelState & ChannelActions>()((set, get
   channels: [],
   programs: [],
   programsByChannel: new Map(),
-  categories: [],
+  categoriesByType: {},
   groups: ['All'],
   regions: ['All'],
   contentTypeCounts: {},
@@ -156,7 +156,10 @@ export const useChannelStore = create<ChannelState & ChannelActions>()((set, get
     if (!hasApi(apiBaseUrl)) return;
     try {
       const data = await apiFetch(apiBaseUrl, `/api/categories?type=${encodeURIComponent(contentType)}`);
-      set({ categories: data.categories || [] });
+      const list: Category[] = data.categories || [];
+      set((state) => ({
+        categoriesByType: { ...state.categoriesByType, [contentType]: list },
+      }));
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to fetch categories';
       set({ error: msg });

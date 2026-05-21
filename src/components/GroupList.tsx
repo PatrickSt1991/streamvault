@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { ContentType } from '../types';
+import type { ContentType, Category } from '../types';
 import { useChannelStore } from '../stores/channelStore';
 import { useAppStore } from '../stores/appStore';
 import { KEY_CODES } from '../utils/keys';
@@ -10,12 +10,13 @@ interface GroupListProps {
 }
 
 const BATCH_SIZE = 40;
+const EMPTY_CATEGORIES: Category[] = [];
 
 export default function GroupList({ contentType }: GroupListProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [visibleCount, setVisibleCount] = useState(BATCH_SIZE);
   const [focusIndex, setFocusIndex] = useState(-1);
-  const categories = useChannelStore((s) => s.categories);
+  const categories = useChannelStore((s) => s.categoriesByType[contentType] ?? EMPTY_CATEGORIES);
   const fetchCategories = useChannelStore((s) => s.fetchCategories);
   const fetchChannels = useChannelStore((s) => s.fetchChannels);
   const selectGroup = useAppStore((s) => s.selectGroup);

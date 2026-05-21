@@ -17,6 +17,7 @@ interface ChannelListProps {
 }
 
 const MOBILE = isMobile();
+const EMPTY_CATEGORIES: Category[] = [];
 const COLUMN_COUNT = MOBILE ? 3 : 6;
 const ROW_HEIGHT = MOBILE ? 200 : 260;
 const CONTAINER_HEIGHT = 900;
@@ -305,7 +306,7 @@ export default function ChannelList({ contentType }: ChannelListProps) {
   const [epgMap, setEpgMap] = useState<EpgMap>({});
   const fetchedEpgIdsRef = useRef<Set<string>>(new Set());
 
-  const categories = useChannelStore((s) => s.categories);
+  const categories = useChannelStore((s) => s.categoriesByType[contentType] ?? EMPTY_CATEGORIES);
   const fetchCategories = useChannelStore((s) => s.fetchCategories);
   const searchChannelsFn = useChannelStore((s) => s.searchChannels);
   const setChannel = usePlayerStore((s) => s.setChannel);

@@ -19,6 +19,7 @@ interface EpgProgram {
 type EpgByChannel = Record<string, EpgProgram[]>;
 
 const MOBILE = isMobile();
+const EMPTY_CATEGORIES: Category[] = [];
 const HOUR_WIDTH = MOBILE ? 180 : 240; // pixels per hour
 const ROW_HEIGHT = 60;
 const CHANNEL_COL_WIDTH = MOBILE ? 110 : 140;
@@ -175,7 +176,7 @@ export default function EpgGuide() {
   const [timeOffset, setTimeOffset] = useState(0);
   const [selectedProgram, setSelectedProgram] = useState<EpgProgram | null>(null);
   const [selectedGroup, setSelectedGroup] = useState<string | null>('All');
-  const categories = useChannelStore((s) => s.categories);
+  const categories = useChannelStore((s) => s.categoriesByType['livetv'] ?? EMPTY_CATEGORIES);
   const fetchCategories = useChannelStore((s) => s.fetchCategories);
   const setChannel = usePlayerStore((s) => s.setChannel);
   const navigate = useAppStore((s) => s.navigate);
