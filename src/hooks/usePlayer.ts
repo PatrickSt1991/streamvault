@@ -5,7 +5,7 @@ import { useChannelStore } from '../stores/channelStore';
 import type { PlayerState } from '../types';
 import type { SubtitleTrack } from '../services/avplay';
 import { TizenPlayer } from '../services/avplay';
-import { saveWatchProgress, getWatchProgress } from '../services/channel-service';
+import { saveWatchProgress, getWatchProgress, getSubtitlesEnabled, setSubtitlesEnabled } from '../services/channel-service';
 import { clientLogger as log } from '../utils/logger';
 import { useAppStore } from '../stores/appStore';
 
@@ -173,12 +173,10 @@ export function usePlayer(): {
   const [currentSubtitleIndex, setCurrentSubtitleIndex] = useState(-1);
   const [subtitleText, setSubtitleText] = useState('');
   const playerRef = useRef<TizenPlayer | null>(null);
-  // True when the user has explicitly turned subs back on. Defaults to
-  // false because the server's live stream proxy strips embedded
-  // CEA-608/708 captions by default; setting this to true switches the
-  // proxy to pass-through mode. Persisted across stream changes within
-  // a session.
-  const keepSubsRef = useRef(false);
+  // Mirrors the persisted global subtitles preference. Defaults to false
+  // so the server's live stream proxy strips embedded CEA-608/708 captions
+  // and HTML5 text tracks start hidden. Flipped by cycleSubtitles.
+  const keepSubsRef = useRef(getSubtitlesEnabled());
 
   const play = useCallback(() => {
     const channel = usePlayerStore.getState().currentChannel;
@@ -410,6 +408,14 @@ export function usePlayer(): {
             tracks.push({ index: i, language: t.language || 'unknown', label: t.label || `Track ${i + 1}` });
           }
           setSubtitleTracks(tracks);
+          // Honor the global subtitles preference — iOS Safari and other
+          // browsers may auto-show a default text track otherwise.
+          const wantSubs = keepSubsRef.current;
+          const targetIdx = wantSubs && tracks.length > 0 ? 0 : -1;
+          for (let i = 0; i < video.textTracks.length; i++) {
+            video.textTracks[i].mode = i === targetIdx ? 'showing' : 'hidden';
+          }
+          setCurrentSubtitleIndex(targetIdx);
         });
       };
 
@@ -509,17 +515,23 @@ export function usePlayer(): {
 
     setCurrentSubtitleIndex(nextIndex);
 
+    const wantSubs = nextIndex !== -1;
+    keepSubsRef.current = wantSubs;
+    setSubtitlesEnabled(wantSubs);
+
     if (typeof webapis !== 'undefined' && webapis.avplay) {
       // Tizen: subs are stripped server-side, so toggle the proxy mode
       // and reopen the stream with the new URL. AVPlay's own subtitle
       // controls don't reach embedded CC, so reload is the only path.
-      const wantSubs = nextIndex !== -1;
-      if (keepSubsRef.current !== wantSubs) {
-        keepSubsRef.current = wantSubs;
-        play();
-      }
+      play();
     } else {
-      // HTML5: text tracks are handled by the video element directly.
+      // HTML5: drive the video element's text tracks directly.
+      const video = document.getElementById('av-player') as HTMLVideoElement | null;
+      if (video) {
+        for (let i = 0; i < video.textTracks.length; i++) {
+          video.textTracks[i].mode = i === nextIndex ? 'showing' : 'hidden';
+        }
+      }
       playerRef.current?.setSubtitleTrack(nextIndex);
     }
   }, [subtitleTracks, currentSubtitleIndex, play]);

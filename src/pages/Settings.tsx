@@ -3,7 +3,7 @@ import { useChannelStore, SAME_ORIGIN } from '../stores/channelStore';
 import type { InputMode, SyncInterval } from '../stores/channelStore';
 import { useFavoritesStore } from '../stores/favoritesStore';
 import { useAppStore } from '../stores/appStore';
-import { clearRecentChannels, clearAllWatchProgress } from '../services/channel-service';
+import { clearRecentChannels, clearAllWatchProgress, getSubtitlesEnabled, setSubtitlesEnabled } from '../services/channel-service';
 import FocusZone from '../components/FocusZone';
 import { cn } from '../utils/cn';
 
@@ -58,6 +58,7 @@ export default function Settings() {
   const hydrate = useChannelStore((s) => s.hydrate);
   const showToastMessage = useAppStore((s) => s.showToastMessage);
 
+  const [subtitlesOn, setSubtitlesOn] = useState(getSubtitlesEnabled());
   const [localApiUrl, setLocalApiUrl] = useState(apiBaseUrl);
   const [localServerUrl, setLocalServerUrl] = useState(xtreamCredentials.serverUrl);
   const [localUsername, setLocalUsername] = useState(xtreamCredentials.username);
@@ -136,6 +137,13 @@ export default function Settings() {
     clearAllWatchProgress();
     showToastMessage('Continue watching cleared');
   }, [showToastMessage]);
+
+  const handleToggleSubtitles = useCallback(() => {
+    const next = !subtitlesOn;
+    setSubtitlesEnabled(next);
+    setSubtitlesOn(next);
+    showToastMessage(`Subtitles ${next ? 'on' : 'off'}`);
+  }, [subtitlesOn, showToastMessage]);
 
   const handleForceUpdate = useCallback(() => {
     showToastMessage('Reloading...');
@@ -385,6 +393,14 @@ export default function Settings() {
                 Crawl All Streams Now
               </button>
             )}
+          </div>
+
+          {/* Playback */}
+          <div className="flex flex-col gap-3">
+            <h2 className="text-base lg:text-20 font-bold text-accent">Playback</h2>
+            <button className="py-2.5 px-5 lg:py-3 lg:px-7 bg-surface-hover border-2 border-[#222] rounded-lg text-sm lg:text-17 font-semibold text-[#ccc] self-start transition-all duration-150 tap-none focus:border-accent focus:text-white focus:scale-[1.02] disabled:opacity-40" data-focusable tabIndex={0} onClick={handleToggleSubtitles}>
+              Subtitles: {subtitlesOn ? 'On' : 'Off'}
+            </button>
           </div>
 
           {/* Data Management */}

@@ -4,6 +4,7 @@ import { getItem, setItem } from '../utils/storage';
 const RECENT_KEY = 'streamvault_recent_channels';
 const LAST_WATCHED_KEY = 'streamvault_last_watched';
 const WATCH_PROGRESS_KEY = 'streamvault_watch_progress';
+const SUBTITLES_ENABLED_KEY = 'streamvault_subtitles_enabled';
 const MAX_RECENT = 20;
 const MAX_PROGRESS_ENTRIES = 100;
 /** Percentage threshold to consider content "finished" */
@@ -119,6 +120,16 @@ export function clearWatchProgress(channelId: string): void {
  */
 export function clearAllWatchProgress(): void {
   setItem(WATCH_PROGRESS_KEY, {});
+}
+
+// --- Subtitles Preference ---
+
+export function getSubtitlesEnabled(): boolean {
+  return getItem<boolean>(SUBTITLES_ENABLED_KEY, false);
+}
+
+export function setSubtitlesEnabled(enabled: boolean): void {
+  setItem(SUBTITLES_ENABLED_KEY, enabled);
 }
 
 /**
