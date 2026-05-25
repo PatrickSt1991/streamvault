@@ -3,7 +3,7 @@ import { useChannelStore, SAME_ORIGIN } from '../stores/channelStore';
 import type { InputMode, SyncInterval } from '../stores/channelStore';
 import { useFavoritesStore } from '../stores/favoritesStore';
 import { useAppStore } from '../stores/appStore';
-import { clearRecentChannels } from '../services/channel-service';
+import { clearRecentChannels, clearAllWatchProgress } from '../services/channel-service';
 import FocusZone from '../components/FocusZone';
 import { cn } from '../utils/cn';
 
@@ -130,6 +130,11 @@ export default function Settings() {
   const handleClearRecent = useCallback(() => {
     clearRecentChannels();
     showToastMessage('Recently watched cleared');
+  }, [showToastMessage]);
+
+  const handleClearContinueWatching = useCallback(() => {
+    clearAllWatchProgress();
+    showToastMessage('Continue watching cleared');
   }, [showToastMessage]);
 
   const handleForceUpdate = useCallback(() => {
@@ -391,6 +396,9 @@ export default function Settings() {
               </button>
               <button className="py-2.5 px-5 lg:py-3 lg:px-7 bg-[#ff4757] text-white border-2 border-[#ff4757] rounded-lg text-sm lg:text-17 font-semibold self-start transition-all duration-150 tap-none focus:border-white focus:text-white focus:scale-[1.02] disabled:opacity-40" data-focusable tabIndex={0} onClick={handleClearRecent}>
                 Clear Recently Watched
+              </button>
+              <button className="py-2.5 px-5 lg:py-3 lg:px-7 bg-[#ff4757] text-white border-2 border-[#ff4757] rounded-lg text-sm lg:text-17 font-semibold self-start transition-all duration-150 tap-none focus:border-white focus:text-white focus:scale-[1.02] disabled:opacity-40" data-focusable tabIndex={0} onClick={handleClearContinueWatching}>
+                Clear Continue Watching
               </button>
             </div>
           </div>
