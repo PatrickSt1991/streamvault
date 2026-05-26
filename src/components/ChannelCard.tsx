@@ -90,7 +90,12 @@ function ChannelCardInner({ channel, onSelect, vindex }: ChannelCardProps) {
         style={!channel.logo ? { backgroundColor: getColorForName(channel.name) } : undefined}
         data-letter={channel.name.charAt(0).toUpperCase()}
       />
-      <span className="py-1.5 px-2 lg:py-2.5 lg:px-3 text-11 lg:text-15 font-semibold whitespace-nowrap overflow-hidden text-ellipsis">{channel.name}</span>
+      <span
+        className="py-2 px-2 lg:py-3 lg:px-3 text-12 lg:text-base font-semibold leading-snug break-words line-clamp-2 lg:min-h-[3rem]"
+        title={channel.name}
+      >
+        {channel.name}
+      </span>
       {MOBILE ? (
         <button
           className={cn(

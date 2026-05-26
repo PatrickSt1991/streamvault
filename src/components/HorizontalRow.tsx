@@ -9,8 +9,8 @@ interface HorizontalRowProps {
   onSelect: (channel: Channel) => void;
 }
 
-const CARD_WIDTH = 216; // 200px card + 16px gap
-const VISIBLE_COUNT = 8; // ~1852px viewport / 216px
+const CARD_WIDTH = 240; // 224px card + 16px gap
+const VISIBLE_COUNT = 8; // ~1852px viewport / 240px
 const BUFFER = 2;
 
 export default function HorizontalRow({ title, channels, onSelect }: HorizontalRowProps) {
@@ -73,7 +73,7 @@ export default function HorizontalRow({ title, channels, onSelect }: HorizontalR
               <div style={{ width: startIdx * CARD_WIDTH, flexShrink: 0 }} />
             )}
             {channels.slice(startIdx, endIdx + 1).map((channel) => (
-              <div key={channel.id} className="w-[130px] lg:w-[200px] shrink-0">
+              <div key={channel.id} className="w-[140px] lg:w-[224px] shrink-0">
                 <ChannelCard
                   channel={channel}
                   onSelect={onSelect}
@@ -87,7 +87,7 @@ export default function HorizontalRow({ title, channels, onSelect }: HorizontalR
           </>
         ) : (
           channels.map((channel) => (
-            <div key={channel.id} className="w-[130px] lg:w-[200px] shrink-0">
+            <div key={channel.id} className="w-[140px] lg:w-[224px] shrink-0">
               <ChannelCard
                 channel={channel}
                 onSelect={onSelect}

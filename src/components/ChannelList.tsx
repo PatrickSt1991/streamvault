@@ -18,8 +18,8 @@ interface ChannelListProps {
 
 const MOBILE = isMobile();
 const EMPTY_CATEGORIES: Category[] = [];
-const COLUMN_COUNT = MOBILE ? 3 : 6;
-const ROW_HEIGHT = MOBILE ? 200 : 260;
+const COLUMN_COUNT = MOBILE ? 3 : 5;
+const ROW_HEIGHT = MOBILE ? 210 : 295;
 const CONTAINER_HEIGHT = 900;
 const BUFFER = 2;
 const PREFETCH_ROWS = 3;

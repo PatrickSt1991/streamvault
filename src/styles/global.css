@@ -212,7 +212,10 @@ html[data-tizen] #av-player[data-active] {
   & img {
     width: 100%;
     height: 100%;
-    object-fit: cover;
+    /* `contain` over `cover` keeps logos and posters fully visible inside
+       the card without cropping — especially important for horizontal live
+       TV logos and portrait movie posters that don't match the card aspect. */
+    object-fit: contain;
     position: relative;
     z-index: 1;
   }
