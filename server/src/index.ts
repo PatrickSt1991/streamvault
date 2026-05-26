@@ -594,7 +594,8 @@ app.get('/api/stream/:channelId', async (req, res) => {
       const finalHost = new URL(upstream.finalUrl).hostname;
       if (finalHost.includes('cloudflare') || finalHost.includes('abuse')) {
         logger.error(`Stream proxy: Cloudflare blocked stream for ${channelId} (redirected to ${finalHost}, ${cl} bytes)`);
-        upstream.body.destroy();
+        upstream.body.on('error', () => {});
+        upstream.body.dump().catch(() => {});
         res.status(502).json({ error: 'Stream blocked by CDN protection. The content provider may be restricting access.' });
         return;
       }
@@ -602,7 +603,8 @@ app.get('/api/stream/:channelId', async (req, res) => {
 
     if (upstream.statusCode >= 400) {
       logger.error(`Stream proxy: upstream error ${upstream.statusCode} for ${channelId}`);
-      upstream.body.destroy();
+      upstream.body.on('error', () => {});
+      upstream.body.dump().catch(() => {});
       res.status(upstream.statusCode).json({ error: `Upstream error: ${upstream.statusCode}` });
       return;
     }
@@ -610,7 +612,8 @@ app.get('/api/stream/:channelId', async (req, res) => {
     // Reject HTML responses — upstream returned an error page instead of video
     if (upstreamCT && upstreamCT.includes('text/html')) {
       logger.error(`Stream proxy: upstream returned text/html for ${channelId} — likely an error page (final URL: ${upstream.finalUrl.substring(0, 100)})`);
-      upstream.body.destroy();
+      upstream.body.on('error', () => {});
+      upstream.body.dump().catch(() => {});
       res.status(502).json({ error: 'Stream unavailable — provider returned an error page instead of video' });
       return;
     }
@@ -743,7 +746,8 @@ app.get('/api/proxy', async (req, res) => {
     const upstream = await requestStream(url, upstreamHeaders, 10, 30_000);
 
     if (upstream.statusCode >= 400) {
-      upstream.body.destroy();
+      upstream.body.on('error', () => {});
+      upstream.body.dump().catch(() => {});
       res.status(upstream.statusCode).json({ error: `Upstream error: ${upstream.statusCode}` });
       return;
     }

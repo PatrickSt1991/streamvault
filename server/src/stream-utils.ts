@@ -3,6 +3,9 @@ import { request, type Dispatcher } from 'undici';
 import { getChannelById } from './db.js';
 import { logger } from './logger.js';
 
+/** undici BodyReadable extends Readable with a dump() helper for safe discard. */
+export type UndiciBody = Readable & { dump: (opts?: { limit?: number }) => Promise<void> };
+
 /** Standard VLC-like headers to get past CDN restrictions */
 export const VLC_HEADERS: Record<string, string> = {
   'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20',
@@ -40,7 +43,7 @@ export async function fetchWithRedirects(url: string, headers: Record<string, st
 export interface StreamResponse {
   statusCode: number;
   headers: Record<string, string | string[] | undefined>;
-  body: Readable;
+  body: UndiciBody;
   finalUrl: string;
 }
 
@@ -72,22 +75,25 @@ export async function requestStream(
     });
     if (resp.statusCode >= 300 && resp.statusCode < 400) {
       const location = resp.headers['location'];
-      if (!location) throw new Error(`Redirect ${resp.statusCode} with no Location header`);
+      if (!location) {
+        await resp.body.dump().catch(() => {});
+        throw new Error(`Redirect ${resp.statusCode} with no Location header`);
+      }
       const locStr = Array.isArray(location) ? location[0] : location;
       currentUrl = new URL(locStr, currentUrl).href;
       logger.info(`Stream redirect ${resp.statusCode} → ${currentUrl.substring(0, 100)}...`);
+      // dump() reads-and-discards safely; destroy() causes undici to emit an
+      // unhandled error event that can crash the process.
+      await resp.body.dump().catch(() => {});
       if (currentUrl.includes('cloudflare-terms-of-service-abuse') || currentUrl.includes('cloudflare.com/abuse')) {
-        resp.body.destroy();
         throw new Error('Stream blocked by Cloudflare — provider CDN flagged for abuse');
       }
-      resp.body.resume();
-      resp.body.destroy();
       continue;
     }
     // Bump highWaterMark for fewer syscalls on big payloads (4K = 25-50Mbps).
     // undici returns a Readable that can have its hwm tweaked post-construction
     // via the internal _readableState; this is a no-op if not present.
-    const body = resp.body as unknown as Readable & { _readableState?: { highWaterMark: number } };
+    const body = resp.body as UndiciBody & { _readableState?: { highWaterMark: number } };
     if (body._readableState) body._readableState.highWaterMark = 1024 * 1024;
     return {
       statusCode: resp.statusCode,
