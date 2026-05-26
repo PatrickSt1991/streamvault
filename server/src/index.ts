@@ -625,12 +625,14 @@ app.get('/api/stream/:channelId', async (req, res) => {
     const contentRange = pickHeader(upstream.headers, 'content-range');
     if (contentRange) res.setHeader('Content-Range', contentRange);
 
-    const acceptRanges = pickHeader(upstream.headers, 'accept-ranges');
-    if (acceptRanges) {
-      res.setHeader('Accept-Ranges', acceptRanges);
-    } else if (!isLive) {
-      // Ensure clients see Range support for VOD even if upstream omits it.
+    // Normalize Accept-Ranges to the canonical "bytes" for VOD — some upstreams
+    // send malformed values (e.g. "0-1234567") that confuse strict clients.
+    // Live streams keep upstream's value (or omit it).
+    if (!isLive) {
       res.setHeader('Accept-Ranges', 'bytes');
+    } else {
+      const acceptRanges = pickHeader(upstream.headers, 'accept-ranges');
+      if (acceptRanges) res.setHeader('Accept-Ranges', acceptRanges);
     }
 
     const contentType = upstreamCT || '';
