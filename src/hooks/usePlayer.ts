@@ -8,6 +8,7 @@ import { TizenPlayer } from '../services/avplay';
 import { saveWatchProgress, getWatchProgress, getSubtitlesEnabled, setSubtitlesEnabled } from '../services/channel-service';
 import { clientLogger as log } from '../utils/logger';
 import { useAppStore } from '../stores/appStore';
+import { isTizen } from '../utils/platform';
 
 const toast = (msg: string) => useAppStore.getState().showToastMessage(msg);
 
@@ -143,9 +144,28 @@ function stopPlayback() {
 
 // ---------------------------------------------------------------------------
 
-/** Build a proxied stream URL that goes through our server */
-export function getStreamUrl(channelId: string, directUrl?: string, keepSubs?: boolean): string {
+/**
+ * Build a stream URL for the player.
+ *
+ * On Tizen TVs for VOD/series episodes, we bypass the server proxy entirely
+ * and let AVPlay hit the upstream Xtream URL directly. The TV has no CORS,
+ * the proxy adds a hop on the Pi 5, and VOD doesn't need ffmpeg subtitle
+ * stripping (only live MPEG-TS embeds DVB/CEA captions that need stripping).
+ * Live TV always goes through the proxy on every platform.
+ *
+ * Mobile/desktop browsers must use the proxy (CORS).
+ *
+ * @param isLive whether this stream is live TV (forces proxy + ffmpeg path)
+ * @param directUrl the upstream URL (required for episodes, also used for Tizen VOD bypass)
+ */
+export function getStreamUrl(channelId: string, directUrl?: string, keepSubs?: boolean, isLive?: boolean): string {
   const apiBaseUrl = useChannelStore.getState().apiBaseUrl;
+
+  if (isTizen() && !isLive && directUrl) {
+    log.info('Tizen VOD bypass: streaming directly from upstream (no proxy hop)');
+    return directUrl;
+  }
+
   const params: string[] = [];
   if (directUrl && channelId.startsWith('episode_')) {
     params.push(`url=${encodeURIComponent(directUrl)}`, 'type=series');
@@ -216,24 +236,27 @@ export function usePlayer(): {
         const isRecording = channel.id.startsWith('recording_');
         const tizenPlayUrl = isRecording
           ? `${useChannelStore.getState().apiBaseUrl}${channel.url}`
-          : getStreamUrl(channel.id, channel.url, keepSubsRef.current);
+          : getStreamUrl(channel.id, channel.url, keepSubsRef.current, isLive);
         log.info(`AVPlay: opening ${tizenPlayUrl}`);
         avplay.open(tizenPlayUrl);
         avplay.setDisplayRect(0, 0, 1920, 1080);
 
-        // Bigger buffer for live MPEG-TS over HTTP — Tizen's defaults stall
-        // frequently on flaky upstream feeds. Catch unsupported-call errors so
-        // older firmware doesn't break.
+        // Buffer config — live uses 10s (low latency vs. resilience tradeoff),
+        // VOD uses 20s so 4K bitrates (25-50Mbps) survive ISP hiccups without
+        // stalling. Tizen defaults are far too small for 4K. Catch unsupported
+        // calls so older firmware doesn't break.
+        const playBufferSec = isLive ? 10 : 20;
+        const resumeBufferSec = isLive ? 10 : 20;
         try {
           avplay.setBufferingParam?.(
             'PLAYER_BUFFER_FOR_PLAY',
             'PLAYER_BUFFER_SIZE_IN_SECOND',
-            isLive ? 10 : 5
+            playBufferSec
           );
           avplay.setBufferingParam?.(
             'PLAYER_BUFFER_FOR_RESUME',
             'PLAYER_BUFFER_SIZE_IN_SECOND',
-            isLive ? 10 : 5
+            resumeBufferSec
           );
         } catch (err) {
           log.warn('AVPlay: setBufferingParam unsupported', err);
@@ -424,7 +447,7 @@ export function usePlayer(): {
       // Recordings have a direct server URL; live/VOD go through stream proxy
       const playUrl = isRecording
         ? `${useChannelStore.getState().apiBaseUrl}${channel.url}`
-        : getStreamUrl(channel.id, channel.url);
+        : getStreamUrl(channel.id, channel.url, false, isLiveTs);
       log.info(`HTML5: playUrl=${playUrl}, contentType=${channel.contentType}`);
 
       if (isLiveTs) {
@@ -482,6 +505,10 @@ export function usePlayer(): {
         // VOD (MP4, etc) — direct URL (no proxy needed, browser handles it)
         log.info(`HTML5: direct video playback, setting src=${playUrl}`);
         setupEvents();
+        // Force aggressive preload for VOD so the browser fills its buffer
+        // before playback starts. iOS Safari may clamp this without user
+        // gesture, but Chrome/Edge/Android honor it.
+        try { video.preload = 'auto'; } catch { /* ignore */ }
         video.src = playUrl;
         video.load();
       }

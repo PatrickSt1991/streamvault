@@ -1,3 +1,5 @@
+import { Readable } from 'node:stream';
+import { request, type Dispatcher } from 'undici';
 import { getChannelById } from './db.js';
 import { logger } from './logger.js';
 
@@ -34,6 +36,75 @@ export async function fetchWithRedirects(url: string, headers: Record<string, st
   }
   throw new Error('Too many redirects');
 }
+
+export interface StreamResponse {
+  statusCode: number;
+  headers: Record<string, string | string[] | undefined>;
+  body: Readable;
+  finalUrl: string;
+}
+
+/**
+ * Streaming-optimized upstream fetch using undici.request directly.
+ *
+ * Returns a Node Readable instead of a Web ReadableStream — avoids the
+ * Readable.fromWeb() conversion overhead and gives a real Node stream that
+ * pipes with full backpressure semantics. Uses the shared keepalive
+ * dispatcher (installed globally by http-agent.ts).
+ *
+ * highWaterMark is set on the response body so chunks flow in ~1MB blocks
+ * instead of the default 16KB — fewer syscalls at 4K bitrates.
+ */
+export async function requestStream(
+  url: string,
+  headers: Record<string, string>,
+  maxRedirects = 10,
+  timeoutMs = 30_000,
+): Promise<StreamResponse> {
+  let currentUrl = url;
+  for (let i = 0; i < maxRedirects; i++) {
+    const resp: Dispatcher.ResponseData = await request(currentUrl, {
+      method: 'GET',
+      headers,
+      maxRedirections: 0,
+      headersTimeout: timeoutMs,
+      bodyTimeout: 0,
+    });
+    if (resp.statusCode >= 300 && resp.statusCode < 400) {
+      const location = resp.headers['location'];
+      if (!location) throw new Error(`Redirect ${resp.statusCode} with no Location header`);
+      const locStr = Array.isArray(location) ? location[0] : location;
+      currentUrl = new URL(locStr, currentUrl).href;
+      logger.info(`Stream redirect ${resp.statusCode} → ${currentUrl.substring(0, 100)}...`);
+      if (currentUrl.includes('cloudflare-terms-of-service-abuse') || currentUrl.includes('cloudflare.com/abuse')) {
+        resp.body.destroy();
+        throw new Error('Stream blocked by Cloudflare — provider CDN flagged for abuse');
+      }
+      resp.body.resume();
+      resp.body.destroy();
+      continue;
+    }
+    // Bump highWaterMark for fewer syscalls on big payloads (4K = 25-50Mbps).
+    // undici returns a Readable that can have its hwm tweaked post-construction
+    // via the internal _readableState; this is a no-op if not present.
+    const body = resp.body as unknown as Readable & { _readableState?: { highWaterMark: number } };
+    if (body._readableState) body._readableState.highWaterMark = 1024 * 1024;
+    return {
+      statusCode: resp.statusCode,
+      headers: resp.headers,
+      body,
+      finalUrl: currentUrl,
+    };
+  }
+  throw new Error('Too many redirects');
+}
+
+function pickHeader(headers: Record<string, string | string[] | undefined>, name: string): string | undefined {
+  const v = headers[name];
+  if (v === undefined) return undefined;
+  return Array.isArray(v) ? v[0] : v;
+}
+export { pickHeader };
 
 /** Resolve the final stream URL for a channel, following all redirects */
 export async function resolveStreamUrl(channelId: string): Promise<string> {

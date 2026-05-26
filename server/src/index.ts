@@ -3,9 +3,18 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'url';
-import { Readable } from 'node:stream';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
+import type { Socket } from 'node:net';
+
+function setStreamSocketOpts(res: import('express').Response): void {
+  // Disable Nagle so writes flush immediately. Reduces small-write latency
+  // under high throughput (4K bitrates push lots of TCP segments).
+  const sock = res.socket as Socket | null;
+  if (sock && typeof sock.setNoDelay === 'function') {
+    try { sock.setNoDelay(true); } catch { /* ignore */ }
+  }
+}
 import {
   getChannels, getChannelById, getChannelsByIds, getChannelsByGroup, getChannelCountByGroup, getGroups, getRegions,
   getPrograms, getProgramsByChannelIds, getProgramsByChannel, saveProgramsForChannels,
@@ -23,7 +32,8 @@ import { getStatus, sync, cancelSync, startupSync, startCrawl, cancelCrawl } fro
 import { fetchXtreamStreamsByCategory, fetchXtreamShortEpg, fetchAllCategoryStreams, fetchXtreamSeriesInfo, fetchXtreamVodInfo } from './xtream.js';
 import type { XtreamConfig } from './xtream.js';
 import { logger } from './logger.js';
-import { fetchWithRedirects, VLC_HEADERS } from './stream-utils.js';
+import { requestStream, pickHeader, VLC_HEADERS } from './stream-utils.js';
+import { prewarmUpstream } from './http-agent.js';
 import { startRecording, stopRecording, cancelRecording, deleteRecordingFile, getRecordingFilePath } from './recorder.js';
 import { startScheduler, getSchedulerStatus, matchRules } from './recording-scheduler.js';
 import { recoverRecordings } from './recorder.js';
@@ -562,64 +572,78 @@ app.get('/api/stream/:channelId', async (req, res) => {
       logger.info(`Stream proxy: forwarding Range header: ${req.headers.range}`);
     }
 
-    // Manually follow redirects to keep VLC headers on every hop
-    const upstream = await fetchWithRedirects(
+    // Use undici.request directly: returns a Node Readable so we skip the
+    // Web→Node stream conversion overhead, and rides the shared keepalive
+    // pool (huge win for VOD seeks). Live has no body timeout; VOD gets a
+    // 30s headers timeout.
+    const upstream = await requestStream(
       streamUrl,
       upstreamHeaders,
       10,
-      isLive ? undefined : 30_000,
+      isLive ? 30_000 : 30_000,
     );
 
-    logger.info(`Stream proxy: final URL=${upstream.url.substring(0, 100)}...`);
-    logger.info(`Stream proxy: upstream responded ${upstream.status} ${upstream.statusText}, content-type=${upstream.headers.get('content-type')}, content-length=${upstream.headers.get('content-length')}`);
+    logger.info(`Stream proxy: final URL=${upstream.finalUrl.substring(0, 100)}...`);
+    const upstreamCT = pickHeader(upstream.headers, 'content-type');
+    const upstreamCL = pickHeader(upstream.headers, 'content-length');
+    logger.info(`Stream proxy: upstream responded ${upstream.statusCode}, content-type=${upstreamCT}, content-length=${upstreamCL}`);
 
     // Detect Cloudflare abuse page (tiny response masquerading as video)
-    const contentLength = upstream.headers.get('content-length');
-    const cl = contentLength ? parseInt(contentLength, 10) : null;
+    const cl = upstreamCL ? parseInt(upstreamCL, 10) : null;
     if (cl && cl < 100_000 && !isLive) {
-      const finalHost = new URL(upstream.url).hostname;
+      const finalHost = new URL(upstream.finalUrl).hostname;
       if (finalHost.includes('cloudflare') || finalHost.includes('abuse')) {
         logger.error(`Stream proxy: Cloudflare blocked stream for ${channelId} (redirected to ${finalHost}, ${cl} bytes)`);
+        upstream.body.destroy();
         res.status(502).json({ error: 'Stream blocked by CDN protection. The content provider may be restricting access.' });
         return;
       }
     }
 
-    if (!upstream.ok && upstream.status !== 206) {
-      logger.error(`Stream proxy: upstream error ${upstream.status} for ${channelId}`);
-      res.status(upstream.status).json({ error: `Upstream error: ${upstream.status}` });
+    if (upstream.statusCode >= 400) {
+      logger.error(`Stream proxy: upstream error ${upstream.statusCode} for ${channelId}`);
+      upstream.body.destroy();
+      res.status(upstream.statusCode).json({ error: `Upstream error: ${upstream.statusCode}` });
       return;
     }
 
     // Reject HTML responses — upstream returned an error page instead of video
-    const ct = upstream.headers.get('content-type');
-    if (ct && ct.includes('text/html')) {
-      logger.error(`Stream proxy: upstream returned text/html for ${channelId} — likely an error page (final URL: ${upstream.url.substring(0, 100)})`);
+    if (upstreamCT && upstreamCT.includes('text/html')) {
+      logger.error(`Stream proxy: upstream returned text/html for ${channelId} — likely an error page (final URL: ${upstream.finalUrl.substring(0, 100)})`);
+      upstream.body.destroy();
       res.status(502).json({ error: 'Stream unavailable — provider returned an error page instead of video' });
       return;
     }
-    if (ct) res.setHeader('Content-Type', ct);
+    if (upstreamCT) res.setHeader('Content-Type', upstreamCT);
     res.setHeader('Access-Control-Allow-Origin', '*');
 
-    if (contentLength) res.setHeader('Content-Length', contentLength);
+    if (upstreamCL) res.setHeader('Content-Length', upstreamCL);
 
-    const contentRange = upstream.headers.get('content-range');
+    const contentRange = pickHeader(upstream.headers, 'content-range');
     if (contentRange) res.setHeader('Content-Range', contentRange);
 
-    const acceptRanges = upstream.headers.get('accept-ranges');
+    const acceptRanges = pickHeader(upstream.headers, 'accept-ranges');
     if (acceptRanges) {
       res.setHeader('Accept-Ranges', acceptRanges);
     } else if (!isLive) {
+      // Ensure clients see Range support for VOD even if upstream omits it.
       res.setHeader('Accept-Ranges', 'bytes');
     }
 
-    const contentType = ct || '';
+    const contentType = upstreamCT || '';
     const isM3u8 = contentType.includes('mpegurl') || contentType.includes('m3u') || streamUrl.endsWith('.m3u8');
 
-    res.status(upstream.status);
+    // Preserve 206 Partial Content when client sent a Range — required for
+    // browsers/AVPlay to enable seeking. If upstream answered 200 to a Range
+    // request, leave the status as-is (some servers ignore Range).
+    res.status(upstream.statusCode);
+    setStreamSocketOpts(res);
 
     if (isM3u8) {
-      const body = await upstream.text();
+      // M3U8 is text — read body to string, rewrite URLs, send.
+      const chunks: Buffer[] = [];
+      for await (const chunk of upstream.body) chunks.push(chunk as Buffer);
+      const body = Buffer.concat(chunks).toString('utf8');
       logger.info(`Stream proxy: HLS playlist received (${body.length} bytes), rewriting URLs`);
       const baseUrl = streamUrl.substring(0, streamUrl.lastIndexOf('/') + 1);
       const rewritten = body.replace(/^(?!#)(\S+)/gm, (line: string) => {
@@ -638,15 +662,9 @@ app.get('/api/stream/:channelId', async (req, res) => {
       // = no transcoding, only demuxer/muxer overhead. Skip when the
       // client opts in to keeping subs via `?subs=1`.
       logger.info(`Stream proxy: ffmpeg -sn pipe for ${channelId} (content-type: ${contentType})`);
-      if (!upstream.body) {
-        logger.error(`Stream proxy: no response body for ${channelId}`);
-        res.status(502).json({ error: 'No response body' });
-        return;
-      }
       // ffmpeg's output length is unknown; never forward upstream Content-Length.
       res.removeHeader('Content-Length');
 
-      const nodeStream = Readable.fromWeb(upstream.body as import('node:stream/web').ReadableStream);
       // CEA-608/708 closed captions ride inside H.264 SEI NAL units (type 6)
       // and HEVC SEI (types 39/40), so `-sn` alone won't drop them — that
       // flag only filters separate subtitle PIDs. `filter_units` is a
@@ -671,39 +689,34 @@ app.get('/api/stream/:channelId', async (req, res) => {
       ff.on('error', (err) => {
         logger.error(`ffmpeg spawn failed for ${channelId}: ${err.message}`);
         if (!res.headersSent) res.status(500).json({ error: 'Stream processing failed' });
-        nodeStream.destroy();
+        upstream.body.destroy();
       });
       ff.on('exit', (code, signal) => {
         logger.info(`ffmpeg exited ${channelId} code=${code} signal=${signal}`);
       });
 
-      // Upstream → ffmpeg stdin (don't end ff.stdin via auto-pipe close on
-      // upstream EOF will close stdin, which is what we want for live drops)
-      nodeStream.pipe(ff.stdin);
+      // Upstream → ffmpeg stdin → response. Default pipe end:true closes ff.stdin
+      // on upstream EOF, which is what we want for live drops.
+      upstream.body.pipe(ff.stdin);
       ff.stdout.pipe(res);
 
       // Suppress EPIPE noise when the other side of these pipes closes first
       ff.stdin.on('error', () => {});
       ff.stdout.on('error', () => {});
-      nodeStream.on('error', (err) => logger.warn(`upstream error ${channelId}: ${err.message}`));
+      upstream.body.on('error', (err) => logger.warn(`upstream error ${channelId}: ${err.message}`));
 
       req.on('close', () => {
         logger.info(`Stream proxy: client disconnected from ${channelId}`);
-        nodeStream.destroy();
+        upstream.body.destroy();
         if (!ff.killed) ff.kill('SIGKILL');
       });
     } else {
-      logger.info(`Stream proxy: piping binary stream for ${channelId} (content-type: ${contentType}, content-length: ${contentLength || 'unknown'})`);
-      if (!upstream.body) {
-        logger.error(`Stream proxy: no response body for ${channelId}`);
-        res.status(502).json({ error: 'No response body' });
-        return;
-      }
-      const nodeStream = Readable.fromWeb(upstream.body as import('node:stream/web').ReadableStream);
-      nodeStream.pipe(res);
+      logger.info(`Stream proxy: piping binary stream for ${channelId} (content-type: ${contentType}, content-length: ${upstreamCL || 'unknown'})`);
+      upstream.body.on('error', (err) => logger.warn(`upstream error ${channelId}: ${err.message}`));
+      upstream.body.pipe(res);
       req.on('close', () => {
         logger.info(`Stream proxy: client disconnected from ${channelId}`);
-        nodeStream.destroy();
+        upstream.body.destroy();
       });
     }
   } catch (err) {
@@ -727,34 +740,29 @@ app.get('/api/proxy', async (req, res) => {
     const upstreamHeaders: Record<string, string> = { 'User-Agent': 'StreamVault/1.0' };
     if (req.headers.range) upstreamHeaders['Range'] = req.headers.range;
 
-    const upstream = await fetch(url, {
-      signal: AbortSignal.timeout(30_000),
-      headers: upstreamHeaders,
-    });
+    const upstream = await requestStream(url, upstreamHeaders, 10, 30_000);
 
-    if (!upstream.ok && upstream.status !== 206) {
-      res.status(upstream.status).json({ error: `Upstream error: ${upstream.status}` });
+    if (upstream.statusCode >= 400) {
+      upstream.body.destroy();
+      res.status(upstream.statusCode).json({ error: `Upstream error: ${upstream.statusCode}` });
       return;
     }
 
-    const ct = upstream.headers.get('content-type');
+    const ct = pickHeader(upstream.headers, 'content-type');
     if (ct) res.setHeader('Content-Type', ct);
     res.setHeader('Access-Control-Allow-Origin', '*');
-    const cl = upstream.headers.get('content-length');
+    const cl = pickHeader(upstream.headers, 'content-length');
     if (cl) res.setHeader('Content-Length', cl);
-    const cr = upstream.headers.get('content-range');
+    const cr = pickHeader(upstream.headers, 'content-range');
     if (cr) res.setHeader('Content-Range', cr);
-    res.setHeader('Accept-Ranges', upstream.headers.get('accept-ranges') || 'bytes');
-    res.status(upstream.status);
+    res.setHeader('Accept-Ranges', pickHeader(upstream.headers, 'accept-ranges') || 'bytes');
+    res.status(upstream.statusCode);
+    setStreamSocketOpts(res);
 
-    if (!upstream.body) {
-      res.status(502).json({ error: 'No response body' });
-      return;
-    }
-    // @ts-expect-error Node fetch body is a ReadableStream
+    upstream.body.on('error', () => {});
     upstream.body.pipe(res);
     req.on('close', () => {
-      upstream.body?.cancel?.();
+      upstream.body.destroy();
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Proxy error';
@@ -1087,6 +1095,9 @@ app.get('/{*path}', (req, res) => {
 const httpServer = app.listen(PORT, '0.0.0.0', () => {
   logger.info(`StreamVault server listening on http://0.0.0.0:${PORT}`);
   startupSync();
+  // Prewarm DNS+TLS to the Xtream upstream so first user click hits a warm socket
+  const xtreamServer = getConfig('xtream_server');
+  if (xtreamServer) prewarmUpstream(xtreamServer);
   // Start recording scheduler and recover any interrupted recordings
   recoverRecordings().then(() => {
     startScheduler();

@@ -60,6 +60,7 @@ function AvPlayerVideo({ currentView }: { currentView: string }) {
     <video
       id="av-player"
       playsInline
+      preload="auto"
       {...{ 'x-webkit-airplay': 'allow' }}
       {...(currentView === 'player' ? { 'data-active': '' } : {})}
       className={cn(
