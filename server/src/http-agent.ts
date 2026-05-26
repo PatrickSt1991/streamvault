@@ -1,4 +1,7 @@
 import { Agent, setGlobalDispatcher } from 'undici';
+import { lookup } from 'node:dns/promises';
+import net from 'node:net';
+import tls from 'node:tls';
 import { logger } from './logger.js';
 
 /**
@@ -34,21 +37,48 @@ setGlobalDispatcher(streamAgent);
 logger.info('HTTP keepalive agent installed (connections=32, keepAliveTimeout=30s)');
 
 /**
- * Fire-and-forget DNS + TLS + TCP prewarm for an upstream host so the first
- * user play hits a warm socket. Many Xtream providers don't answer bare
- * HEAD /, so we hit player_api.php (which the app already uses) — it returns
- * fast even without credentials, and seeds the keepalive pool with a live
- * socket on the right origin.
+ * Fire-and-forget DNS lookup + TCP/TLS handshake to upstream so the first
+ * user play doesn't pay cold-start latency. We don't do an HTTP request —
+ * many Xtream providers don't answer bare probes and just time us out.
+ * Pre-resolving DNS and doing the TLS handshake covers the bulk of cold
+ * connection cost; undici will still open its own pooled sockets on the
+ * first real fetch, but the OS DNS cache + TLS session ticket cache make
+ * those sockets come up fast.
  */
 export async function prewarmUpstream(serverUrl: string): Promise<void> {
   try {
     const u = new URL(serverUrl);
-    const probeUrl = `${u.protocol}//${u.host}/player_api.php`;
-    const ctl = AbortSignal.timeout(15_000);
-    const res = await fetch(probeUrl, { method: 'GET', signal: ctl, dispatcher: streamAgent } as RequestInit & { dispatcher: Agent });
-    // Drain body so the socket returns to the pool ready for reuse.
-    await res.text().catch(() => {});
-    logger.info(`Upstream prewarm OK: ${u.host} (status ${res.status})`);
+    const port = u.port ? parseInt(u.port, 10) : (u.protocol === 'https:' ? 443 : 80);
+    const t0 = Date.now();
+    // Resolve once so the OS cache has it for the next fetch.
+    const { address } = await lookup(u.hostname);
+    const dnsMs = Date.now() - t0;
+
+    const handshakeMs = await new Promise<number>((resolve) => {
+      const t1 = Date.now();
+      const sock: net.Socket = u.protocol === 'https:'
+        ? tls.connect({ host: u.hostname, port, servername: u.hostname })
+        : net.connect({ host: u.hostname, port });
+      const done = () => {
+        try { sock.destroy(); } catch { /* ignore */ }
+        resolve(Date.now() - t1);
+      };
+      const fail = () => {
+        try { sock.destroy(); } catch { /* ignore */ }
+        resolve(-1);
+      };
+      sock.setTimeout(8_000);
+      sock.on('connect', done);
+      sock.on('secureConnect', done);
+      sock.on('timeout', fail);
+      sock.on('error', fail);
+    });
+
+    if (handshakeMs >= 0) {
+      logger.info(`Upstream prewarm OK: ${u.hostname} (${address}) dns=${dnsMs}ms handshake=${handshakeMs}ms`);
+    } else {
+      logger.warn(`Upstream prewarm: DNS ok (${dnsMs}ms) but handshake failed for ${u.hostname}`);
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.warn(`Upstream prewarm skipped: ${msg}`);
