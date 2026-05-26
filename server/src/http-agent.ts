@@ -34,17 +34,21 @@ setGlobalDispatcher(streamAgent);
 logger.info('HTTP keepalive agent installed (connections=32, keepAliveTimeout=30s)');
 
 /**
- * Fire-and-forget DNS + TLS prewarm for an upstream host so the first user
- * play hits a warm socket. Called from sync.ts on startup once Xtream config
- * is known.
+ * Fire-and-forget DNS + TLS + TCP prewarm for an upstream host so the first
+ * user play hits a warm socket. Many Xtream providers don't answer bare
+ * HEAD /, so we hit player_api.php (which the app already uses) — it returns
+ * fast even without credentials, and seeds the keepalive pool with a live
+ * socket on the right origin.
  */
 export async function prewarmUpstream(serverUrl: string): Promise<void> {
   try {
     const u = new URL(serverUrl);
-    const probeUrl = `${u.protocol}//${u.host}/`;
-    const ctl = AbortSignal.timeout(5_000);
-    await fetch(probeUrl, { method: 'HEAD', signal: ctl, dispatcher: streamAgent } as RequestInit & { dispatcher: Agent });
-    logger.info(`Upstream prewarm OK: ${u.host}`);
+    const probeUrl = `${u.protocol}//${u.host}/player_api.php`;
+    const ctl = AbortSignal.timeout(15_000);
+    const res = await fetch(probeUrl, { method: 'GET', signal: ctl, dispatcher: streamAgent } as RequestInit & { dispatcher: Agent });
+    // Drain body so the socket returns to the pool ready for reuse.
+    await res.text().catch(() => {});
+    logger.info(`Upstream prewarm OK: ${u.host} (status ${res.status})`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.warn(`Upstream prewarm skipped: ${msg}`);
