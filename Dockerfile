@@ -11,7 +11,7 @@ COPY src/ src/
 COPY public/ public/
 
 # Build with empty server URL so frontend uses relative /api paths
-RUN VITE_SERVER_URL="" npx vite build
+RUN VITE_SERVER_URL="" npm run build
 
 ## Stage 2: Build server native deps
 FROM node:24-slim AS server-build
@@ -38,5 +38,8 @@ COPY server/src/ src/
 COPY --from=frontend-build /app/dist public/
 
 EXPOSE 3001
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:3001/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 CMD ["node", "--import", "tsx", "src/index.ts"]

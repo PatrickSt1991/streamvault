@@ -1,68 +1,62 @@
 #!/usr/bin/env node
 'use strict';
 
-// Signs the dist/ directory using Samsung certificates from certs/ and creates StreamVault.wgt
-// Works with both Samsung certs (from generate-samsung-cert.cjs) and fallback dev certs
+// Signs the dist/ directory using Samsung certificates from certs/ and creates StreamVault.wgt.
+// Requires OpenSSL (available on the development host) instead of bundling vulnerable JS crypto parsers.
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const forge = require('node-forge');
-const { execSync } = require('child_process');
+const { execFileSync, execSync } = require('child_process');
 
 const PROJECT_DIR = path.resolve(__dirname, '..');
 const DIST_DIR = path.join(PROJECT_DIR, 'dist');
 const CERT_DIR = path.join(PROJECT_DIR, 'certs');
 const WGT_FILE = path.join(PROJECT_DIR, 'StreamVault.wgt');
-// Check if Samsung certs exist, otherwise fall back to tizen-tv-dev-cli
-let authorP12, authorPassword, distributorP12, distributorPassword;
 
-if (fs.existsSync(path.join(CERT_DIR, 'author.p12'))) {
-  console.log('Using certificates from certs/');
-  authorP12 = path.join(CERT_DIR, 'author.p12');
-  authorPassword = process.env.CERT_AUTHOR_PASSWORD;
-  distributorP12 = path.join(CERT_DIR, 'distributor.p12');
-  distributorPassword = process.env.CERT_DIST_PASSWORD;
-  if (!authorPassword || !distributorPassword) {
-    console.error('Error: CERT_AUTHOR_PASSWORD and CERT_DIST_PASSWORD env vars required. Add them to .env.');
+const authorP12 = process.env.CERT_AUTHOR_P12 || path.join(CERT_DIR, 'author.p12');
+const distributorP12 = process.env.CERT_DIST_P12 || path.join(CERT_DIR, 'distributor.p12');
+const authorPassword = process.env.CERT_AUTHOR_PASSWORD;
+const distributorPassword = process.env.CERT_DIST_PASSWORD;
+
+for (const [name, value] of [
+  ['CERT_AUTHOR_PASSWORD', authorPassword],
+  ['CERT_DIST_PASSWORD', distributorPassword],
+]) {
+  if (!value) {
+    console.error(`Error: ${name} env var is required. Add it to .env or export it.`);
     process.exit(1);
   }
-} else {
-  console.log('Samsung certs not found, falling back to tizen-tv-dev-cli dev certs');
-  const devCliPath = path.dirname(require.resolve('tizen-tv-dev-cli/package.json'));
-  authorP12 = path.join(devCliPath, 'resource/Author/tizentvapp.p12');
-  authorPassword = process.env.CERT_AUTHOR_PASSWORD;
-  distributorP12 = path.join(devCliPath, 'resource/certificate-generator/certificates/distributor/tizen-distributor-signer.p12');
-  distributorPassword = process.env.CERT_DIST_PASSWORD;
-  if (!authorPassword || !distributorPassword) {
-    console.error('Error: CERT_AUTHOR_PASSWORD and CERT_DIST_PASSWORD env vars required. Add them to .env.');
+}
+
+for (const [label, file] of [
+  ['author certificate', authorP12],
+  ['distributor certificate', distributorP12],
+]) {
+  if (!fs.existsSync(file)) {
+    console.error(`Error: ${label} not found at ${file}. Set CERT_AUTHOR_P12/CERT_DIST_P12 or place certificates in certs/.`);
     process.exit(1);
   }
 }
 
 function loadP12(p12Path, password) {
-  const p12Der = fs.readFileSync(p12Path, { encoding: 'binary' });
-  const p12Asn1 = forge.asn1.fromDer(p12Der);
-  const p12 = forge.pkcs12.pkcs12FromAsn1(p12Asn1, password);
-
-  let privateKey = null;
-  const certs = [];
-
-  const keyBags = p12.getBags({ bagType: forge.oids.pkcs8ShroudedKeyBag });
-  for (const bagType of Object.keys(keyBags)) {
-    for (const item of keyBags[bagType]) {
-      if (item.key) privateKey = item.key;
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'streamvault-sign-'));
+  const keyPath = path.join(tmpDir, 'key.pem');
+  const certPath = path.join(tmpDir, 'certs.pem');
+  try {
+    execFileSync('openssl', ['pkcs12', '-in', p12Path, '-passin', `pass:${password}`, '-nocerts', '-nodes', '-out', keyPath], { stdio: ['ignore', 'ignore', 'pipe'] });
+    execFileSync('openssl', ['pkcs12', '-in', p12Path, '-passin', `pass:${password}`, '-nokeys', '-out', certPath], { stdio: ['ignore', 'ignore', 'pipe'] });
+    const privateKeyPem = fs.readFileSync(keyPath, 'utf8');
+    const certPem = fs.readFileSync(certPath, 'utf8');
+    const certs = certPem.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g) || [];
+    if (!privateKeyPem.includes('PRIVATE KEY') || certs.length === 0) {
+      throw new Error('Certificate bundle did not contain a private key and certificate');
     }
+    return { privateKeyPem, certs };
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
-
-  const certBags = p12.getBags({ bagType: forge.oids.certBag });
-  for (const bagType of Object.keys(certBags)) {
-    for (const item of certBags[bagType]) {
-      if (item.cert) certs.push(item.cert);
-    }
-  }
-
-  return { privateKey, certs };
 }
 
 function sha256(content) {
@@ -98,7 +92,6 @@ function buildReferences(files, target) {
     refs += `<DigestValue>${digest}</DigestValue>\n</Reference>\n`;
   }
 
-  // Object reference
   const objDigest = target === 'AuthorSignature'
     ? 'lpo8tUDs054eLlBQXiDPVDVKfw30ZZdtkRs1jd7H5K8='
     : 'u/jU3U4Zm5ihTMSjKGlGYbWzDfRkGphPPHx3gJIYEJ4=';
@@ -120,26 +113,22 @@ function buildSignedInfo(target, refs) {
 }
 
 function canonicalize(signedInfoXml) {
-  // Wrap in Signature element for namespace, then extract canonical SignedInfo
-  const wrapper = `<Signature xmlns="http://www.w3.org/2000/09/xmldsig#">${signedInfoXml}\n</Signature>`;
-  // For exc-c14n#, the SignedInfo inherits the xmlns from parent
-  // Simple approach: add the namespace to SignedInfo directly
-  const canonical = signedInfoXml.replace('<SignedInfo>', '<SignedInfo xmlns="http://www.w3.org/2000/09/xmldsig#">');
-  return canonical;
+  return signedInfoXml.replace('<SignedInfo>', '<SignedInfo xmlns="http://www.w3.org/2000/09/xmldsig#">');
 }
 
-function signData(data, privateKey) {
-  const pem = forge.pki.privateKeyToPem(privateKey);
+function signData(data, privateKeyPem) {
   const signer = crypto.createSign('RSA-SHA256');
   signer.update(data);
-  return signer.sign(pem, 'base64');
+  return signer.sign(privateKeyPem, 'base64');
 }
 
 function buildKeyInfo(certs) {
   let xml = '<KeyInfo><X509Data>\n';
   for (const cert of certs) {
-    const pem = forge.pki.certificateToPem(cert);
-    const b64 = pem.replace(/-----BEGIN CERTIFICATE-----\n?/, '').replace(/-----END CERTIFICATE-----\n?/, '');
+    const b64 = cert
+      .replace(/-----BEGIN CERTIFICATE-----\n?/, '')
+      .replace(/-----END CERTIFICATE-----\n?/, '')
+      .replace(/\r?\n/g, '');
     xml += `<X509Certificate>${b64}</X509Certificate>\n`;
   }
   xml += '</X509Data>\n</KeyInfo>\n';
@@ -160,12 +149,12 @@ function buildObject(target) {
 }
 
 function createSignatureXML(target, filename, p12Path, password) {
-  const { privateKey, certs } = loadP12(p12Path, password);
+  const { privateKeyPem, certs } = loadP12(p12Path, password);
   const files = getAllFiles(DIST_DIR);
   const refs = buildReferences(files, target);
   const signedInfo = buildSignedInfo(target, refs);
   const canonical = canonicalize(signedInfo);
-  const signatureValue = signData(canonical, privateKey);
+  const signatureValue = signData(canonical, privateKeyPem);
   const keyInfo = buildKeyInfo(certs);
   const obj = buildObject(target);
 
@@ -180,19 +169,16 @@ function createSignatureXML(target, filename, p12Path, password) {
   console.log(`Created ${filename}`);
 }
 
-// Sign
 console.log('Signing dist/ with author certificate...');
 createSignatureXML('AuthorSignature', 'author-signature.xml', authorP12, authorPassword);
 
 console.log('Signing dist/ with distributor certificate...');
 createSignatureXML('DistributorSignature', 'signature1.xml', distributorP12, distributorPassword);
 
-// Package
 console.log('Creating WGT...');
 if (fs.existsSync(WGT_FILE)) fs.unlinkSync(WGT_FILE);
 execSync(`cd "${DIST_DIR}" && zip -r "${WGT_FILE}" . -x '*.map'`, { stdio: 'inherit' });
 
-// Cleanup signature files from dist
 for (const f of ['author-signature.xml', 'signature1.xml', 'signature2.xml']) {
   const p = path.join(DIST_DIR, f);
   if (fs.existsSync(p)) fs.unlinkSync(p);

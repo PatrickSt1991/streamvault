@@ -37,17 +37,27 @@ import { prewarmUpstream } from './http-agent.js';
 import { startRecording, stopRecording, cancelRecording, deleteRecordingFile, getRecordingFilePath } from './recorder.js';
 import { startScheduler, getSchedulerStatus, matchRules } from './recording-scheduler.js';
 import { recoverRecordings } from './recorder.js';
+import { rewriteHlsManifest } from './hls.js';
+import { parseByteRange } from './ranges.js';
+import { allowedProxyHostsFromConfig, maskConfigResponse, normalizeAllowedOrigins, requireAuth, validateExternalHttpUrl } from './security.js';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3001', 10);
 
-app.use(cors());
+const allowedOrigins = normalizeAllowedOrigins(process.env.STREAMVAULT_ALLOWED_ORIGINS);
+app.use(cors({
+  origin: allowedOrigins.length > 0 ? allowedOrigins : true,
+}));
 app.use(express.json());
 
 // Request logging
 app.use((req, _res, next) => {
   logger.info(`${req.method} ${req.path}`);
   next();
+});
+
+app.get('/api/health', (_req, res) => {
+  res.json({ ok: true, service: 'streamvault', time: Date.now() });
 });
 
 // ---------- Helper: get Xtream config ----------
@@ -551,7 +561,12 @@ app.get('/api/stream/:channelId', async (req, res) => {
     streamUrl = channel.url;
     contentType = channel.content_type;
   } else if (req.query.url) {
-    streamUrl = req.query.url as string;
+    const validation = validateExternalHttpUrl(req.query.url as string, allowedProxyHostsFromConfig(getConfig('xtream_server'), process.env.STREAMVAULT_PROXY_ALLOWED_HOSTS));
+    if (!validation.ok) {
+      res.status(400).json({ error: validation.error });
+      return;
+    }
+    streamUrl = validation.url.toString();
     contentType = (req.query.type as string) || 'series';
     logger.info(`Stream proxy: using URL param for ${channelId}`);
   } else {
@@ -650,13 +665,11 @@ app.get('/api/stream/:channelId', async (req, res) => {
       for await (const chunk of upstream.body) chunks.push(chunk as Buffer);
       const body = Buffer.concat(chunks).toString('utf8');
       logger.info(`Stream proxy: HLS playlist received (${body.length} bytes), rewriting URLs`);
-      const baseUrl = streamUrl.substring(0, streamUrl.lastIndexOf('/') + 1);
-      const rewritten = body.replace(/^(?!#)(\S+)/gm, (line: string) => {
-        if (line.startsWith('http://') || line.startsWith('https://')) {
-          return `/api/proxy?url=${encodeURIComponent(line)}`;
-        }
-        return `/api/proxy?url=${encodeURIComponent(baseUrl + line)}`;
-      });
+      if (body.length > 2_000_000) {
+        res.status(502).json({ error: 'HLS playlist too large to proxy safely' });
+        return;
+      }
+      const rewritten = rewriteHlsManifest(body, upstream.finalUrl || streamUrl);
       res.send(rewritten);
     } else if (isLive && req.query.subs !== '1') {
       // Live MPEG-TS: pipe through ffmpeg to drop subtitle PIDs (`-sn`) and
@@ -741,11 +754,17 @@ app.get('/api/proxy', async (req, res) => {
     return;
   }
 
+  const validation = validateExternalHttpUrl(url, allowedProxyHostsFromConfig(getConfig('xtream_server'), process.env.STREAMVAULT_PROXY_ALLOWED_HOSTS));
+  if (!validation.ok) {
+    res.status(400).json({ error: validation.error });
+    return;
+  }
+
   try {
     const upstreamHeaders: Record<string, string> = { 'User-Agent': 'StreamVault/1.0' };
     if (req.headers.range) upstreamHeaders['Range'] = req.headers.range;
 
-    const upstream = await requestStream(url, upstreamHeaders, 10, 30_000);
+    const upstream = await requestStream(validation.url.toString(), upstreamHeaders, 10, 30_000);
 
     if (upstream.statusCode >= 400) {
       upstream.body.on('error', () => {});
@@ -780,7 +799,7 @@ app.get('/api/proxy', async (req, res) => {
 
 // ---------- Recordings ----------
 
-app.get('/api/recordings', (_req, res) => {
+app.get('/api/recordings', requireAuth, (_req, res) => {
   const status = _req.query.status as string | undefined;
   const limit = _req.query.limit ? parseInt(_req.query.limit as string, 10) : undefined;
   const offset = _req.query.offset ? parseInt(_req.query.offset as string, 10) : undefined;
@@ -788,9 +807,9 @@ app.get('/api/recordings', (_req, res) => {
   res.json({ recordings });
 });
 
-app.post('/api/recordings', (req, res) => {
+app.post('/api/recordings', requireAuth, (req, res) => {
   const { channelId, title, startTime, endTime } = req.body;
-  if (!channelId || !startTime || !endTime) {
+  if (!channelId || !Number.isFinite(startTime) || !Number.isFinite(endTime) || endTime <= startTime) {
     res.status(400).json({ error: 'channelId, startTime, and endTime required' });
     return;
   }
@@ -826,9 +845,9 @@ app.post('/api/recordings', (req, res) => {
   res.json({ recording });
 });
 
-app.post('/api/recordings/from-program', (req, res) => {
+app.post('/api/recordings/from-program', requireAuth, (req, res) => {
   const { channelId, programStart, programStop, title } = req.body;
-  if (!channelId || !programStart || !programStop) {
+  if (!channelId || !Number.isFinite(programStart) || !Number.isFinite(programStop) || programStop <= programStart) {
     res.status(400).json({ error: 'channelId, programStart, and programStop required' });
     return;
   }
@@ -863,8 +882,9 @@ app.post('/api/recordings/from-program', (req, res) => {
   res.json({ recording });
 });
 
-app.get('/api/recordings/:id', (req, res) => {
-  const recording = getRecording(req.params.id);
+app.get('/api/recordings/:id', requireAuth, (req, res) => {
+  const recordingId = String(req.params.id);
+  const recording = getRecording(recordingId);
   if (!recording) {
     res.status(404).json({ error: 'Recording not found' });
     return;
@@ -872,72 +892,83 @@ app.get('/api/recordings/:id', (req, res) => {
   res.json({ recording });
 });
 
-app.delete('/api/recordings/:id', (req, res) => {
-  const recording = getRecording(req.params.id);
+app.delete('/api/recordings/:id', requireAuth, (req, res) => {
+  const recordingId = String(req.params.id);
+  const recording = getRecording(recordingId);
   if (!recording) {
     res.status(404).json({ error: 'Recording not found' });
     return;
   }
   if (recording.status === 'recording') {
-    cancelRecording(req.params.id, true).catch(() => {});
+    cancelRecording(recordingId, true).catch(() => {});
   } else {
-    deleteRecordingFile(req.params.id);
+    deleteRecordingFile(recordingId);
   }
-  deleteRecording(req.params.id);
+  deleteRecording(recordingId);
   res.json({ ok: true });
 });
 
-app.post('/api/recordings/:id/cancel', (req, res) => {
-  const recording = getRecording(req.params.id);
+app.post('/api/recordings/:id/cancel', requireAuth, (req, res) => {
+  const recordingId = String(req.params.id);
+  const recording = getRecording(recordingId);
   if (!recording) {
     res.status(404).json({ error: 'Recording not found' });
     return;
   }
   if (recording.status === 'recording') {
-    cancelRecording(req.params.id).catch(() => {});
+    cancelRecording(recordingId).catch(() => {});
   } else if (recording.status === 'scheduled') {
-    updateRecording(req.params.id, { status: 'cancelled' });
+    updateRecording(recordingId, { status: 'cancelled' });
   }
   res.json({ ok: true });
 });
 
-app.post('/api/recordings/:id/stop', (req, res) => {
-  const recording = getRecording(req.params.id);
+app.post('/api/recordings/:id/stop', requireAuth, (req, res) => {
+  const recordingId = String(req.params.id);
+  const recording = getRecording(recordingId);
   if (!recording) {
     res.status(404).json({ error: 'Recording not found' });
     return;
   }
   if (recording.status === 'recording') {
-    stopRecording(req.params.id).catch(() => {});
+    stopRecording(recordingId).catch(() => {});
   }
   res.json({ ok: true });
 });
 
 app.get('/api/recordings/:id/stream', (req, res) => {
-  const filePath = getRecordingFilePath(req.params.id);
+  const filePath = getRecordingFilePath(String(req.params.id));
   if (!filePath) {
     res.status(404).json({ error: 'Recording file not found' });
     return;
   }
 
-  const stat = fs.statSync(filePath);
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(filePath);
+  } catch {
+    res.status(404).json({ error: 'Recording file not found' });
+    return;
+  }
   const fileSize = stat.size;
   const range = req.headers.range;
   const contentType = filePath.endsWith('.ts') ? 'video/mp2t' : 'video/mp4';
 
   if (range) {
-    const parts = range.replace(/bytes=/, '').split('-');
-    const start = parseInt(parts[0], 10);
-    const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-    const chunkSize = end - start + 1;
+    const parsed = parseByteRange(range, fileSize);
+    if (!parsed.ok) {
+      res.writeHead(416, { 'Content-Range': `bytes */${fileSize}` });
+      res.end();
+      return;
+    }
 
     res.writeHead(206, {
-      'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+      'Content-Range': `bytes ${parsed.start}-${parsed.end}/${fileSize}`,
       'Accept-Ranges': 'bytes',
-      'Content-Length': chunkSize,
+      'Content-Length': parsed.chunkSize,
       'Content-Type': contentType,
     });
-    fs.createReadStream(filePath, { start, end }).pipe(res);
+    fs.createReadStream(filePath, { start: parsed.start, end: parsed.end }).pipe(res);
   } else {
     res.writeHead(200, {
       'Content-Length': fileSize,
@@ -948,21 +979,25 @@ app.get('/api/recordings/:id/stream', (req, res) => {
   }
 });
 
-app.get('/api/recording-status', (_req, res) => {
+app.get('/api/recording-status', requireAuth, (_req, res) => {
   res.json(getSchedulerStatus());
 });
 
 // ---------- Recording Rules ----------
 
-app.get('/api/recording-rules', (_req, res) => {
+app.get('/api/recording-rules', requireAuth, (_req, res) => {
   const rules = getRecordingRules();
   res.json({ rules });
 });
 
-app.post('/api/recording-rules', (req, res) => {
+app.post('/api/recording-rules', requireAuth, (req, res) => {
   const { channelId, channelName, matchTitle, matchType, paddingBefore, paddingAfter, maxRecordings } = req.body;
   if (!channelId || !matchTitle) {
     res.status(400).json({ error: 'channelId and matchTitle required' });
+    return;
+  }
+  if (matchType !== undefined && !['contains', 'exact', 'startsWith'].includes(matchType)) {
+    res.status(400).json({ error: 'Invalid matchType' });
     return;
   }
   const id = randomUUID();
@@ -983,32 +1018,39 @@ app.post('/api/recording-rules', (req, res) => {
   res.json({ rule: getRecordingRule(id) });
 });
 
-app.put('/api/recording-rules/:id', (req, res) => {
-  const rule = getRecordingRule(req.params.id);
+app.put('/api/recording-rules/:id', requireAuth, (req, res) => {
+  const ruleId = String(req.params.id);
+  const rule = getRecordingRule(ruleId);
   if (!rule) {
     res.status(404).json({ error: 'Rule not found' });
     return;
   }
   const updates: Record<string, unknown> = {};
   if (req.body.matchTitle !== undefined) updates.match_title = req.body.matchTitle;
-  if (req.body.matchType !== undefined) updates.match_type = req.body.matchType;
+  if (req.body.matchType !== undefined) {
+    if (!['contains', 'exact', 'startsWith'].includes(req.body.matchType)) {
+      res.status(400).json({ error: 'Invalid matchType' });
+      return;
+    }
+    updates.match_type = req.body.matchType;
+  }
   if (req.body.enabled !== undefined) updates.enabled = req.body.enabled ? 1 : 0;
   if (req.body.paddingBefore !== undefined) updates.padding_before = req.body.paddingBefore;
   if (req.body.paddingAfter !== undefined) updates.padding_after = req.body.paddingAfter;
   if (req.body.maxRecordings !== undefined) updates.max_recordings = req.body.maxRecordings;
-  updateRecordingRule(req.params.id, updates);
-  res.json({ rule: getRecordingRule(req.params.id) });
+  updateRecordingRule(ruleId, updates);
+  res.json({ rule: getRecordingRule(ruleId) });
 });
 
-app.delete('/api/recording-rules/:id', (req, res) => {
-  deleteRecordingRule(req.params.id);
+app.delete('/api/recording-rules/:id', requireAuth, (req, res) => {
+  deleteRecordingRule(String(req.params.id));
   res.json({ ok: true });
 });
 
 // ---------- Config ----------
 
-app.get('/api/config', (_req, res) => {
-  res.json({
+app.get('/api/config', requireAuth, (_req, res) => {
+  res.json(maskConfigResponse({
     inputMode: getConfig('input_mode', 'xtream'),
     playlistUrl: getConfig('playlist_url'),
     epgUrl: getConfig('epg_url'),
@@ -1016,17 +1058,34 @@ app.get('/api/config', (_req, res) => {
     xtreamUsername: getConfig('xtream_username'),
     xtreamPassword: getConfig('xtream_password'),
     syncInterval: getConfig('sync_interval', '24h'),
-  });
+  }));
 });
 
-app.put('/api/config', (req, res) => {
+app.put('/api/config', requireAuth, (req, res) => {
   const { inputMode, playlistUrl, epgUrl, xtreamServer, xtreamUsername, xtreamPassword, syncInterval } = req.body;
+  if (inputMode !== undefined && !['xtream', 'manual'].includes(inputMode)) {
+    res.status(400).json({ error: 'Invalid inputMode' });
+    return;
+  }
+  if (syncInterval !== undefined && !['startup', '6h', '12h', '24h', 'manual'].includes(syncInterval)) {
+    res.status(400).json({ error: 'Invalid syncInterval' });
+    return;
+  }
+  for (const [name, value] of [['playlistUrl', playlistUrl], ['epgUrl', epgUrl], ['xtreamServer', xtreamServer]] as const) {
+    if (value !== undefined && value !== '') {
+      const validation = validateExternalHttpUrl(value);
+      if (!validation.ok) {
+        res.status(400).json({ error: `${name}: ${validation.error}` });
+        return;
+      }
+    }
+  }
   if (inputMode !== undefined) setConfig('input_mode', inputMode);
   if (playlistUrl !== undefined) setConfig('playlist_url', playlistUrl);
   if (epgUrl !== undefined) setConfig('epg_url', epgUrl);
   if (xtreamServer !== undefined) setConfig('xtream_server', xtreamServer);
   if (xtreamUsername !== undefined) setConfig('xtream_username', xtreamUsername);
-  if (xtreamPassword !== undefined) setConfig('xtream_password', xtreamPassword);
+  if (xtreamPassword !== undefined && xtreamPassword !== '') setConfig('xtream_password', xtreamPassword);
   if (syncInterval !== undefined) setConfig('sync_interval', syncInterval);
   res.json({ ok: true });
 });
@@ -1037,22 +1096,22 @@ app.get('/api/status', (_req, res) => {
   res.json(getStatus());
 });
 
-app.post('/api/sync', (_req, res) => {
+app.post('/api/sync', requireAuth, (_req, res) => {
   sync();
   res.json({ ok: true, message: 'Sync started' });
 });
 
-app.post('/api/sync/cancel', (_req, res) => {
+app.post('/api/sync/cancel', requireAuth, (_req, res) => {
   cancelSync();
   res.json({ ok: true, message: 'Sync cancelled' });
 });
 
-app.post('/api/crawl', (_req, res) => {
+app.post('/api/crawl', requireAuth, (_req, res) => {
   startCrawl();
   res.json({ ok: true, message: 'Crawl started' });
 });
 
-app.post('/api/crawl/cancel', (_req, res) => {
+app.post('/api/crawl/cancel', requireAuth, (_req, res) => {
   cancelCrawl();
   res.json({ ok: true, message: 'Crawl cancelled' });
 });

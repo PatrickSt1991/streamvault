@@ -328,10 +328,6 @@ export default function EpgGuide() {
     return Object.values(epgData).some(programs => programs.length > 0);
   }, [epgData]);
 
-  if (loading) {
-    return <div className="p-3 lg:p-5 h-full flex flex-col overflow-hidden"><div className="text-[#888] text-center py-[60px]">Loading guide...</div></div>;
-  }
-
   // TV: arrow keys scroll the guide grid (no per-cell focus management)
   const containerRef = useRef<HTMLDivElement>(null);
   const handleGridKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -366,6 +362,10 @@ export default function EpgGuide() {
     if (MOBILE) return;
     requestAnimationFrame(() => containerRef.current?.focus({ preventScroll: true }));
   }, []);
+
+  if (loading) {
+    return <div className="p-3 lg:p-5 h-full flex flex-col overflow-hidden"><div className="text-[#888] text-center py-[60px]">Loading guide...</div></div>;
+  }
 
   return (
     <div

@@ -11,6 +11,14 @@ services:
       - streamvault_recordings:/app/data/recordings
     environment:
       - LOG_LEVEL=info
+      # Optional hardening. If set, browser clients must store the same value
+      # in localStorage key `streamvault_auth_token` for protected API calls.
+      - STREAMVAULT_AUTH_TOKEN=${STREAMVAULT_AUTH_TOKEN:-}
+      # Comma-separated extra hosts allowed for /api/proxy, in addition to the
+      # configured Xtream server host.
+      - STREAMVAULT_PROXY_ALLOWED_HOSTS=${STREAMVAULT_PROXY_ALLOWED_HOSTS:-}
+      # Comma-separated explicit CORS origins. Empty keeps current LAN-friendly behavior.
+      - STREAMVAULT_ALLOWED_ORIGINS=${STREAMVAULT_ALLOWED_ORIGINS:-}
     restart: unless-stopped
 
 volumes:

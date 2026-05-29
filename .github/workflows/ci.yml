@@ -14,7 +14,7 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
           cache-dependency-path: |
             package-lock.json
@@ -33,7 +33,12 @@ jobs:
         run: npm run typecheck
 
       - name: Typecheck server
-        run: cd server && npx tsc --noEmit
+        run: cd server && npm run typecheck
+
+      - name: Audit production dependencies
+        run: |
+          npm audit --omit=dev
+          cd server && npm run audit:prod
 
       - name: Test
         run: npm run test

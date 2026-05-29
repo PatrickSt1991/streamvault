@@ -66,6 +66,7 @@ function buildProgramIndex(programs: Program[]): Map<string, Program[]> {
 
 declare const __SERVER_URL__: string;
 const API_BASE_URL_KEY = 'streamvault_api_url';
+const API_TOKEN_KEY = 'streamvault_auth_token';
 const DEFAULT_SERVER_URL: string = typeof __SERVER_URL__ !== 'undefined' ? __SERVER_URL__ : '';
 // When served from the same origin (PWA), API is always available via relative paths
 export const SAME_ORIGIN = !DEFAULT_SERVER_URL;
@@ -99,7 +100,10 @@ interface ChannelActions {
 
 async function apiFetch(baseUrl: string, path: string, options?: RequestInit) {
   const url = `${baseUrl}${path}`;
-  const response = await fetch(url, options);
+  const token = getItem(API_TOKEN_KEY, '');
+  const headers = new Headers(options?.headers);
+  if (token) headers.set('x-streamvault-token', token);
+  const response = await fetch(url, { ...options, headers });
   if (!response.ok) {
     throw new Error(`API error: ${response.status} ${response.statusText}`);
   }
