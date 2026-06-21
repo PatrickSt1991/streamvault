@@ -13,7 +13,7 @@
 
 - TypeScript strict mode with `verbatimModuleSyntax` - use `import type` for type-only imports
 - `noUnusedLocals` and `noUnusedParameters` enabled - no unused variables
-- Build target: ES2017 (Tizen 6.5 / Chromium 85 compatibility)
+- Build target: Chrome 63 (Tizen 5.0 compatibility) — `vite build` emits a legacy SystemJS bundle via `@vitejs/plugin-legacy` and lowers CSS to Chromium 63
 - React 19 rules: no refs during render, no setState in effects, no impure functions in render
 - **Never use eslint-disable comments** - fix the actual issue instead
 - **Use `useMemo` for derived state** - never derive state by calling `setState` inside a `useEffect`; use `useMemo` or compute inline instead
