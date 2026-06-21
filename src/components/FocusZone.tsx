@@ -170,7 +170,7 @@ export default function FocusZone({ children, className, onEnter }: FocusZonePro
       }
 
       // Determine direction
-      let direction: Direction | null = null;
+      let direction: Direction;
       switch (e.keyCode) {
         case KEY_CODES.UP: direction = 'up'; break;
         case KEY_CODES.DOWN: direction = 'down'; break;

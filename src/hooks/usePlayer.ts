@@ -193,6 +193,9 @@ export function usePlayer(): {
   const [currentSubtitleIndex, setCurrentSubtitleIndex] = useState(-1);
   const [subtitleText, setSubtitleText] = useState('');
   const playerRef = useRef<TizenPlayer | null>(null);
+  // Always points at the latest `play`, so callbacks closed over an empty
+  // dep array (e.g. the auto-retry handler) can re-invoke the current one.
+  const playRef = useRef<() => void>(() => {});
   // Mirrors the persisted global subtitles preference. Defaults to false
   // so the server's live stream proxy strips embedded CEA-608/708 captions
   // and HTML5 text tracks start hidden. Flipped by cycleSubtitles.
@@ -278,7 +281,7 @@ export function usePlayer(): {
           avplayLastRetryAt = now;
           log.warn(`AVPlay: ${reason} — auto-retrying`);
           clearAvplayStallTimer();
-          play();
+          playRef.current();
           return true;
         };
 
@@ -514,6 +517,11 @@ export function usePlayer(): {
       }
     }
   }, []);
+
+  // Keep the ref pointed at the latest play() for closures that captured []
+  useEffect(() => {
+    playRef.current = play;
+  }, [play]);
 
   const stop = useCallback(() => {
     playerRef.current = null;

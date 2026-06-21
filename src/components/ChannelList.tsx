@@ -393,6 +393,9 @@ export default function ChannelList({ contentType }: ChannelListProps) {
     const loadedRows = Math.ceil(channels.length / COLUMN_COUNT);
     const visibleEndRow = Math.ceil((scrollOffset + CONTAINER_HEIGHT) / ROW_HEIGHT);
     if (visibleEndRow >= loadedRows - BUFFER) {
+      // Guarded paginate: the BUFFER threshold above plus loadNextPage's own
+      // loadingMore/nextCursor guards stop this from looping on its own setState.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       loadNextPage();
     }
   }, [scrollOffset, channels.length, nextCursor, loadNextPage]);
