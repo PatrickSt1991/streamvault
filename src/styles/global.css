@@ -302,3 +302,21 @@ html[data-tizen] #av-player[data-active] {
 @utility tap-none {
   -webkit-tap-highlight-color: transparent;
 }
+
+/* ============================
+   TV focus ring
+   Make the focused element unmistakable for remote navigation. Uses
+   box-shadow (not outline) so the ring follows border-radius on the Tizen
+   Chromium 63 WebView, where `outline` ignores rounded corners. Applies to
+   every spatial-navigation target plus focusable buttons/links/inputs.
+   ============================ */
+[data-focusable]:focus,
+[data-focusable]:focus-visible,
+a:focus-visible,
+button:focus-visible,
+input:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 3px var(--color-accent),
+    0 0 14px 3px rgba(0, 212, 255, 0.45);
+}
