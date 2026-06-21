@@ -387,18 +387,17 @@ export default function ChannelList({ contentType }: ChannelListProps) {
     return () => observer.disconnect();
   }, [nextCursor, loadNextPage]);
 
-  // TV infinite scroll: when the viewport approaches the end of loaded rows, fetch more
-  useEffect(() => {
+  // TV infinite scroll: paginate straight from the scroll event (see onScroll
+  // below) rather than an effect, so we never trigger loadNextPage's setState
+  // synchronously inside the effect phase.
+  const maybeLoadMore = useCallback((offset: number) => {
     if (MOBILE || !nextCursor) return;
     const loadedRows = Math.ceil(channels.length / COLUMN_COUNT);
-    const visibleEndRow = Math.ceil((scrollOffset + CONTAINER_HEIGHT) / ROW_HEIGHT);
+    const visibleEndRow = Math.ceil((offset + CONTAINER_HEIGHT) / ROW_HEIGHT);
     if (visibleEndRow >= loadedRows - BUFFER) {
-      // Guarded paginate: the BUFFER threshold above plus loadNextPage's own
-      // loadingMore/nextCursor guards stop this from looping on its own setState.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       loadNextPage();
     }
-  }, [scrollOffset, channels.length, nextCursor, loadNextPage]);
+  }, [nextCursor, channels.length, loadNextPage]);
 
   // Debounce search
   useEffect(() => {
@@ -769,7 +768,11 @@ export default function ChannelList({ contentType }: ChannelListProps) {
       <div
         className="h-[900px] overflow-y-auto relative py-2 px-1 [content-visibility:auto]"
         ref={gridRef}
-        onScroll={(e) => setScrollOffset((e.target as HTMLDivElement).scrollTop)}
+        onScroll={(e) => {
+          const top = (e.target as HTMLDivElement).scrollTop;
+          setScrollOffset(top);
+          maybeLoadMore(top);
+        }}
       >
         {channels.length === 0 ? (
           <div className="text-center py-10 lg:py-20 text-base lg:text-22 text-[#444] col-span-full">{emptyMessage}</div>
