@@ -1,0 +1,145 @@
+name: Upstream sync check
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 06:00 UTC nightly (~07:00/08:00 NL). Times are UTC; adjust as needed.
+  workflow_dispatch: {}    # allow manual runs from the Actions tab
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: upstream-sync-check
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compare fork against upstream
+        id: compare
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          FORK="${{ github.repository }}"
+
+          # Resolve the parent (upstream) repo + both default branches from the API.
+          read -r UPSTREAM UPSTREAM_BRANCH FORK_BRANCH < <(
+            gh api "repos/$FORK" \
+              --jq '[(.parent.full_name // ""), (.parent.default_branch // ""), .default_branch] | @tsv'
+          )
+
+          if [ -z "$UPSTREAM" ]; then
+            echo "::error::$FORK has no parent repository (is it actually a fork?)."
+            exit 1
+          fi
+
+          UPSTREAM_OWNER="${UPSTREAM%%/*}"
+          echo "Fork:     $FORK ($FORK_BRANCH)"
+          echo "Upstream: $UPSTREAM ($UPSTREAM_BRANCH)"
+
+          # Compare fork branch (base) to upstream branch (head):
+          #   ahead_by  = commits upstream has that the fork is MISSING (= behind)
+          #   behind_by = commits the fork has that upstream does not (= local-only)
+          CMP="$(gh api "repos/$FORK/compare/$FORK_BRANCH...$UPSTREAM_OWNER:$UPSTREAM_BRANCH")"
+          STATUS="$(jq -r '.status'   <<<"$CMP")"
+          BEHIND="$(jq -r '.ahead_by' <<<"$CMP")"
+          AHEAD="$(jq -r '.behind_by' <<<"$CMP")"
+
+          echo "status=$STATUS behind=$BEHIND local-only=$AHEAD"
+
+          {
+            echo "upstream=$UPSTREAM"
+            echo "upstream_branch=$UPSTREAM_BRANCH"
+            echo "fork_branch=$FORK_BRANCH"
+            echo "status=$STATUS"
+            echo "behind=$BEHIND"
+            echo "ahead=$AHEAD"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Upstream sync check"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Fork | \`$FORK\` (\`$FORK_BRANCH\`) |"
+            echo "| Upstream | \`$UPSTREAM\` (\`$UPSTREAM_BRANCH\`) |"
+            echo "| Status | \`$STATUS\` |"
+            echo "| Behind upstream | **$BEHIND** |"
+            echo "| Local-only commits | $AHEAD |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open / update / close tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          UPSTREAM: ${{ steps.compare.outputs.upstream }}
+          UPSTREAM_BRANCH: ${{ steps.compare.outputs.upstream_branch }}
+          FORK_BRANCH: ${{ steps.compare.outputs.fork_branch }}
+          STATUS: ${{ steps.compare.outputs.status }}
+          BEHIND: ${{ steps.compare.outputs.behind }}
+          AHEAD: ${{ steps.compare.outputs.ahead }}
+        run: |
+          set -euo pipefail
+
+          LABEL="upstream-sync"
+          TITLE="Fork is behind upstream ($UPSTREAM)"
+
+          gh label create "$LABEL" --color FBCA04 \
+            --description "Fork out of sync with upstream" 2>/dev/null || true
+
+          NUM="$(gh issue list --state open --label "$LABEL" \
+                  --json number --jq '.[0].number // empty')"
+
+          if [ "$BEHIND" -eq 0 ]; then
+            echo "In sync with $UPSTREAM."
+            if [ -n "$NUM" ]; then
+              gh issue comment "$NUM" --body "Back in sync with $UPSTREAM. Closing automatically."
+              gh issue close "$NUM"
+            fi
+            exit 0
+          fi
+
+          WARN=""
+          if [ "$STATUS" = "diverged" ]; then
+            WARN="> Note: branches have diverged ($AHEAD local commit(s)) â€” expect a merge, not a fast-forward."
+          fi
+
+          COMPARE_URL="https://github.com/$UPSTREAM/compare/$UPSTREAM_BRANCH...$OWNER:$FORK_BRANCH"
+
+          cat > body.md <<EOF
+          \`${GITHUB_REPOSITORY}\` (\`$FORK_BRANCH\`) is **$BEHIND commit(s) behind** upstream \`$UPSTREAM\` (\`$UPSTREAM_BRANCH\`).
+
+          - Compare status: \`$STATUS\`
+          - Behind upstream by: **$BEHIND**
+          - Local-only commits: **$AHEAD**
+
+          [View the diff on GitHub]($COMPARE_URL)
+
+          ## Sync your fork
+
+          ~~~bash
+          # one-time: add the upstream remote
+          git remote add upstream https://github.com/$UPSTREAM.git
+
+          git fetch upstream
+          git checkout $FORK_BRANCH
+          git merge upstream/$UPSTREAM_BRANCH      # or: git rebase upstream/$UPSTREAM_BRANCH
+          git push origin $FORK_BRANCH
+          ~~~
+
+          $WARN
+
+          _Checked nightly by \`.github/workflows/upstream-sync-check.yml\`. This issue updates itself and closes when back in sync._
+          EOF
+
+          if [ -n "$NUM" ]; then
+            gh issue edit "$NUM" --title "$TITLE" --body-file body.md
+            echo "Updated issue #$NUM."
+          else
+            gh issue create --title "$TITLE" --label "$LABEL" --body-file body.md
+            echo "Created tracking issue."
+          fi
