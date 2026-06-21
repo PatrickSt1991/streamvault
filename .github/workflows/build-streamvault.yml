@@ -14,11 +14,11 @@ jobs:
     steps:
       # 1. Checkout this repo
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # 2. Setup Node.js
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '24'
 
@@ -121,7 +121,7 @@ jobs:
 
       # 14. Create Release
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: 'v${{ steps.version.outputs.version }}-${{ steps.version.outputs.date_tag }}'
           name: 'StreamVault Tizen v${{ steps.version.outputs.version }} - ${{ steps.version.outputs.date_pretty }}'
