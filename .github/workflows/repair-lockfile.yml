@@ -1,0 +1,48 @@
+name: Repair lockfile (Dependabot fix)
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Align typescript-eslint and resync lockfile
+        run: |
+          set -e
+          # The umbrella "typescript-eslint" must match the already-bumped
+          # plugin/parser (8.61.1). Leaving it at 8.57.0 is what broke the tree.
+          sed -i 's/"typescript-eslint": "8.57.0"/"typescript-eslint": "8.61.1"/' package.json
+          # Regenerate package-lock.json from package.json. This pulls typescript
+          # back to 5.9.3 (the lock had drifted to 6.0.3) and aligns the eslint set.
+          npm install --package-lock-only
+          echo "---- resolved ----"
+          node -e "const p=require('./package-lock.json').packages;for(const k of ['node_modules/typescript','node_modules/typescript-eslint','node_modules/@typescript-eslint/parser'])console.log(k,'->',p[k].version)"
+
+      - name: Open pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          BRANCH="fix/dependabot-lockfile-resync"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add package.json package-lock.json
+          git commit -m "fix: align typescript-eslint to 8.61.1 and resync lockfile"
+          git push -f origin "$BRANCH"
+          gh pr create --base main --head "$BRANCH" \
+            --title "Fix broken Dependabot lockfile (resync, keep TS 5.9.3)" \
+            --body "Aligns the umbrella \`typescript-eslint\` to 8.61.1 (matching the already-bumped \`@typescript-eslint/eslint-plugin\` and \`/parser\`) and regenerates \`package-lock.json\` so it matches \`package.json\`. Keeps TypeScript on 5.9.3 â€” no major bump. Fixes the \`npm ci\` EUSAGE failure." \
+          || gh pr view "$BRANCH" --web >/dev/null 2>&1 || true
+          echo "PR ready â€” open the Pull requests tab and merge it."
