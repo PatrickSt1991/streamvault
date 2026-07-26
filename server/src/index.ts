@@ -16,7 +16,7 @@ function setStreamSocketOpts(res: import('express').Response): void {
   }
 }
 import {
-  getChannels, getChannelById, getChannelsByIds, getChannelsByGroup, getChannelCountByGroup, getGroups, getRegions,
+  getChannels, getChannelById, getChannelsByIds, getChannelsByGroup, getChannelCount, getChannelCountByGroup, getGroups, getRegions,
   getPrograms, getProgramsByChannelIds, getProgramsByChannel, saveProgramsForChannels,
   getConfig, setConfig,
   getCategories, getCategoryByName, getContentTypeCounts,
@@ -25,7 +25,7 @@ import {
   getChannelsByContentTypeCursor, getChannelsByGroupCursor,
   insertRecording, updateRecording, deleteRecording, getRecording, getRecordings,
   insertRecordingRule, updateRecordingRule, deleteRecordingRule, getRecordingRules, getRecordingRule,
-  closeDatabase, backupDatabase,
+  closeDatabase, backupDatabase, getDatabaseHealth,
 } from './db.js';
 import type { DBRecording } from './db.js';
 import { getStatus, sync, cancelSync, startupSync, startCrawl, cancelCrawl } from './sync.js';
@@ -40,9 +40,17 @@ import { recoverRecordings } from './recorder.js';
 import { rewriteHlsManifest } from './hls.js';
 import { parseByteRange } from './ranges.js';
 import { allowedProxyHostsFromConfig, maskConfigResponse, normalizeAllowedOrigins, requireAuth, validateExternalHttpUrl } from './security.js';
+import { isDatabaseCorruptionError } from './db-lifecycle.js';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3001', 10);
+
+function parseIntegerQuery(value: unknown, min: number, max = Number.MAX_SAFE_INTEGER): number | undefined | null {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= min && parsed <= max ? parsed : null;
+}
 
 const allowedOrigins = normalizeAllowedOrigins(process.env.STREAMVAULT_ALLOWED_ORIGINS);
 app.use(cors({
@@ -57,7 +65,14 @@ app.use((req, _res, next) => {
 });
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, service: 'streamvault', time: Date.now() });
+  const database = getDatabaseHealth();
+  res.status(database.ok ? 200 : 503).json({
+    ok: database.ok,
+    service: 'streamvault',
+    database: database.ok ? 'ok' : 'corrupt',
+    ...(database.error ? { error: database.error } : {}),
+    time: Date.now(),
+  });
 });
 
 // ---------- Helper: get Xtream config ----------
@@ -82,9 +97,13 @@ app.get('/api/categories', (req, res) => {
 
 app.get('/api/channels', async (req, res) => {
   const group = req.query.group as string | undefined;
-  const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : undefined;
-  const cursorSort = req.query.cursorSort ? parseInt(req.query.cursorSort as string, 10) : undefined;
+  const limit = parseIntegerQuery(req.query.limit, 1, 200);
+  const cursorSort = parseIntegerQuery(req.query.cursorSort, 0);
   const cursorName = req.query.cursorName as string | undefined;
+  if (limit === null || cursorSort === null || (cursorName !== undefined && cursorSort === undefined) || (cursorSort !== undefined && cursorName === undefined)) {
+    res.status(400).json({ error: 'Invalid pagination parameters' });
+    return;
+  }
   const inputMode = getConfig('input_mode', 'manual');
 
   // If a specific group hasn't been crawled yet, trigger a background fetch (never block)
@@ -113,8 +132,8 @@ app.get('/api/channels', async (req, res) => {
     dbChannels = getChannelsByGroup(group, limit, cursorSort, cursorName);
     total = limit ? getChannelCountByGroup(group) : dbChannels.length;
   } else {
-    dbChannels = getChannels();
-    total = dbChannels.length;
+    dbChannels = getChannels(limit, cursorSort, cursorName);
+    total = limit ? getChannelCount() : dbChannels.length;
   }
 
   const channels = dbChannels.map(ch => ({
@@ -179,8 +198,25 @@ app.post('/api/channels/by-ids', (req, res) => {
 app.get('/api/browse', async (req, res) => {
   const contentType = req.query.type as string | undefined;
   const group = req.query.group as string | undefined;
-  const limit = parseInt(req.query.limit as string || '20', 10);
-  const after = req.query.after as string | undefined; // cursor: name of last item
+  const requestedLimit = parseIntegerQuery(req.query.limit, 1, 200);
+  if (requestedLimit === null) {
+    res.status(400).json({ error: 'Invalid limit' });
+    return;
+  }
+  const limit = requestedLimit ?? 20;
+  const after = req.query.after as string | undefined; // cursor: serialized sort key + name
+  if (after) {
+    try {
+      const cursor = JSON.parse(after) as { a?: unknown; s?: unknown; n?: unknown };
+      const sortValue = contentType === 'movies' || contentType === 'series' ? cursor.a : cursor.s;
+      if (!cursor || typeof cursor !== 'object' || typeof sortValue !== 'number' || typeof cursor.n !== 'string') {
+        throw new Error('invalid cursor');
+      }
+    } catch {
+      res.status(400).json({ error: 'Invalid cursor' });
+      return;
+    }
+  }
   const inputMode = getConfig('input_mode', 'manual');
 
   let dbChannels;
@@ -346,8 +382,12 @@ app.post('/api/fetch-all', async (req, res) => {
 // ---------- Programs ----------
 
 app.get('/api/programs', (req, res) => {
-  const from = req.query.from ? Number(req.query.from) : undefined;
-  const to = req.query.to ? Number(req.query.to) : undefined;
+  const from = req.query.from === undefined ? undefined : Number(req.query.from);
+  const to = req.query.to === undefined ? undefined : Number(req.query.to);
+  if ((from !== undefined && !Number.isFinite(from)) || (to !== undefined && !Number.isFinite(to))) {
+    res.status(400).json({ error: 'Invalid time range' });
+    return;
+  }
   const programs = getPrograms(from, to).map(p => ({
     channelId: p.channel_id,
     title: p.title,
@@ -391,8 +431,12 @@ app.get('/api/epg/batch', (req, res) => {
 
 app.get('/api/epg/channel/:channelId', (req, res) => {
   const channelId = req.params.channelId;
-  const from = req.query.from ? Number(req.query.from) : undefined;
-  const to = req.query.to ? Number(req.query.to) : undefined;
+  const from = req.query.from === undefined ? undefined : Number(req.query.from);
+  const to = req.query.to === undefined ? undefined : Number(req.query.to);
+  if ((from !== undefined && !Number.isFinite(from)) || (to !== undefined && !Number.isFinite(to))) {
+    res.status(400).json({ error: 'Invalid time range' });
+    return;
+  }
   const dbPrograms = getProgramsByChannel(channelId, from, to);
   const programs = dbPrograms.map(p => ({
     channelId: p.channel_id,
@@ -801,8 +845,12 @@ app.get('/api/proxy', async (req, res) => {
 
 app.get('/api/recordings', requireAuth, (_req, res) => {
   const status = _req.query.status as string | undefined;
-  const limit = _req.query.limit ? parseInt(_req.query.limit as string, 10) : undefined;
-  const offset = _req.query.offset ? parseInt(_req.query.offset as string, 10) : undefined;
+  const limit = parseIntegerQuery(_req.query.limit, 1, 200);
+  const offset = parseIntegerQuery(_req.query.offset, 0);
+  if (limit === null || offset === null) {
+    res.status(400).json({ error: 'Invalid pagination parameters' });
+    return;
+  }
   const recordings = getRecordings({ status, limit, offset });
   res.json({ recordings });
 });
@@ -1120,6 +1168,13 @@ app.post('/api/crawl/cancel', requireAuth, (_req, res) => {
 
 app.use('/api', (err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   logger.error(`API error: ${err.message}`);
+  if (isDatabaseCorruptionError(err)) {
+    res.status(503).json({ error: 'Database recovery in progress; retry shortly' });
+    // A clean process restart re-enters the startup recovery path, quarantines
+    // the damaged database, and restores the newest validated backup.
+    setImmediate(() => shutdown('database corruption detected'));
+    return;
+  }
   res.status(500).json({ error: err.message });
 });
 
