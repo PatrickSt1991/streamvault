@@ -5,10 +5,8 @@ import { useAppStore } from '../stores/appStore';
 import { useChannelStore, SAME_ORIGIN } from '../stores/channelStore';
 import type { Recording, RecordingRule, Channel } from '../types';
 import { cn } from '../utils/cn';
-import { isMobile } from '../utils/platform';
-import { KEY_CODES } from '../utils/keys';
+import FocusZone from '../components/FocusZone';
 
-const MOBILE = isMobile();
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
@@ -57,7 +55,7 @@ function RecordingCard({ rec, onPlay, onCancel, onStop, onDelete }: {
   onDelete: () => void;
 }) {
   return (
-    <div className="bg-surface-border rounded-[10px] p-3.5 flex flex-col gap-1.5" data-focusable>
+    <div className="bg-surface-border rounded-[10px] p-3.5 flex flex-col gap-1.5">
       <div className="flex items-center gap-2">
         <span
           className="py-0.5 px-2 rounded text-11 font-semibold text-white uppercase tracking-wider"
@@ -97,7 +95,7 @@ function RuleCard({ rule, onToggle, onDelete }: {
   onDelete: () => void;
 }) {
   return (
-    <div className="bg-surface-border rounded-[10px] p-3.5 flex flex-col gap-1.5" data-focusable>
+    <div className="bg-surface-border rounded-[10px] p-3.5 flex flex-col gap-1.5">
       <div className="flex items-center gap-2">
         <span
           className="py-0.5 px-2 rounded text-11 font-semibold text-white uppercase tracking-wider"
@@ -342,34 +340,8 @@ export default function Recordings() {
     return { upcoming, inProgress, completed, failed };
   }, [recordings]);
 
-  // TV: arrow keys scroll the recordings list
-  const containerRef = useRef<HTMLDivElement>(null);
-  const handleContainerKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (MOBILE) return;
-    const el = containerRef.current;
-    if (!el) return;
-    const step = 200;
-    if (e.keyCode === KEY_CODES.DOWN) {
-      e.preventDefault();
-      el.scrollTop += step;
-    } else if (e.keyCode === KEY_CODES.UP) {
-      e.preventDefault();
-      el.scrollTop -= step;
-    }
-  }, []);
-  useEffect(() => {
-    if (MOBILE) return;
-    requestAnimationFrame(() => containerRef.current?.focus({ preventScroll: true }));
-  }, []);
-
   return (
-    <div
-      ref={containerRef}
-      className="p-4 lg:p-6 lg:px-8 h-full overflow-y-auto pb-20 lg:pb-8 outline-hidden"
-      tabIndex={0}
-      data-focusable
-      onKeyDown={handleContainerKeyDown}
-    >
+    <FocusZone className="p-4 lg:p-6 lg:px-8 h-full overflow-y-auto pb-20 lg:pb-8 outline-hidden">
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-22 lg:text-28 font-bold">Recordings</h1>
         {status && (
@@ -505,6 +477,6 @@ export default function Recordings() {
           )}
         </div>
       )}
-    </div>
+    </FocusZone>
   );
 }

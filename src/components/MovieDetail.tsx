@@ -6,6 +6,7 @@ import { useAppStore } from '../stores/appStore';
 import { useFavoritesStore } from '../stores/favoritesStore';
 import { getWatchProgress } from '../services/channel-service';
 import { cn } from '../utils/cn';
+import FocusZone from './FocusZone';
 
 interface MovieDetailProps {
   movie: Channel;
@@ -53,8 +54,8 @@ export default function MovieDetail({ movie }: MovieDetailProps) {
   const title = info?.name || movie.name;
 
   return (
-    <div className="p-4 lg:p-6 lg:px-8 overflow-y-auto h-full outline-hidden">
-      <button className="inline-flex items-center gap-1.5 py-2 px-4 bg-white/[0.08] border-none rounded-lg text-[#ccc] text-sm mb-4 tap-none active:bg-white/[0.16] lg:hidden" onClick={goBack}>
+    <FocusZone className="p-4 lg:p-6 lg:px-8 overflow-y-auto h-full outline-hidden" onBack={goBack}>
+      <button data-focusable tabIndex={0} className="inline-flex items-center gap-1.5 py-2 px-4 bg-white/[0.08] border-none rounded-lg text-[#ccc] text-sm mb-4 tap-none active:bg-white/[0.16] lg:hidden" onClick={goBack}>
         {'\u2190'} Back
       </button>
 
@@ -84,7 +85,7 @@ export default function MovieDetail({ movie }: MovieDetailProps) {
           )}
 
           <div className="flex gap-2.5 justify-center flex-wrap mt-2 lg:justify-start lg:gap-3 lg:mt-3">
-            <button className="py-3 px-8 bg-brand-red text-white border-none rounded-lg text-base lg:text-18 font-semibold tap-none active:opacity-80 hover:bg-brand-red-hover focus:bg-brand-red-hover focus:outline-hidden" onClick={handlePlay}>
+            <button data-focusable tabIndex={0} className="py-3 px-8 bg-brand-red text-white border-none rounded-lg text-base lg:text-18 font-semibold tap-none active:opacity-80 hover:bg-brand-red-hover focus:bg-brand-red-hover focus:outline-hidden" onClick={handlePlay}>
               {pct > 0 && pct < 95 ? `Resume (${pct}%)` : 'Play'}
             </button>
             <button
@@ -92,6 +93,8 @@ export default function MovieDetail({ movie }: MovieDetailProps) {
                 'py-3 px-5 lg:px-6 bg-white/[0.08] border border-white/[0.15] rounded-lg text-sm lg:text-base tap-none hover:border-favorite hover:text-favorite',
                 isFavorite ? 'text-favorite border-favorite' : 'text-[#ccc]'
               )}
+              data-focusable
+              tabIndex={0}
               onClick={() => toggleFavorite(movie.id)}
             >
               {isFavorite ? '\u2605 Favorited' : '\u2606 Favorite'}
@@ -100,6 +103,8 @@ export default function MovieDetail({ movie }: MovieDetailProps) {
               <div className="relative">
                 <button
                   className="py-3 px-5 lg:px-6 bg-white/[0.08] text-[#ccc] border border-white/[0.15] rounded-lg text-sm lg:text-base tap-none hover:border-accent"
+                  data-focusable
+                  tabIndex={0}
                   onClick={() => setShowListMenu(!showListMenu)}
                 >
                   + Add to List
@@ -115,6 +120,8 @@ export default function MovieDetail({ movie }: MovieDetailProps) {
                             'block w-full py-2.5 px-3.5 bg-transparent border-none rounded-md text-left text-sm lg:text-15 tap-none active:bg-white/[0.08] hover:bg-white/[0.08]',
                             inList ? 'text-success' : 'text-[#ccc]'
                           )}
+                          data-focusable
+                          tabIndex={0}
                           onClick={() => {
                             if (inList) removeFromList(list.id, movie.id);
                             else addToList(list.id, movie.id);
@@ -139,6 +146,6 @@ export default function MovieDetail({ movie }: MovieDetailProps) {
       </div>
 
       {loading && <div className="text-center p-5 lg:p-10 text-[#888] text-sm lg:text-18">Loading movie info...</div>}
-    </div>
+    </FocusZone>
   );
 }

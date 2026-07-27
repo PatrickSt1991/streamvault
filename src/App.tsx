@@ -245,7 +245,7 @@ function AppContent() {
         {/* Persistent browse views — stay mounted once visited to preserve state */}
         {BROWSE_VIEWS.map(({ view, contentType }) => (
           (currentView === view || visitedViews[view]) ? (
-            <div key={view} style={{ display: currentView === view ? undefined : 'none' }}>
+            <div key={view} {...(currentView === view ? { 'data-active-view': '' } : {})} style={{ display: currentView === view ? undefined : 'none' }}>
               <ChannelList contentType={contentType} />
             </div>
           ) : null

@@ -82,6 +82,7 @@ function FilterDropdown({ categories, selectedGroup, onSelect }: FilterDropdownP
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   const filtered = useMemo(() => {
     if (!filterQuery.trim()) return categories;
@@ -119,7 +120,8 @@ function FilterDropdown({ categories, selectedGroup, onSelect }: FilterDropdownP
     });
   }, []);
 
-  // Scroll focused item into view
+  // Move real DOM focus with the highlighted item. Tizen remote navigation is
+  // unreliable when focus remains in the search input and only CSS changes.
   useEffect(() => {
     if (!open || focusIdx < 0) return;
     const list = listRef.current;
@@ -127,6 +129,7 @@ function FilterDropdown({ categories, selectedGroup, onSelect }: FilterDropdownP
     const items = list.querySelectorAll('[data-filter-item]') as NodeListOf<HTMLElement>;
     if (focusIdx < items.length) {
       const item = items[focusIdx];
+      item.focus({ preventScroll: true });
       const top = item.offsetTop;
       const bottom = top + item.offsetHeight;
       if (top < list.scrollTop) list.scrollTop = top - 4;
@@ -137,12 +140,14 @@ function FilterDropdown({ categories, selectedGroup, onSelect }: FilterDropdownP
   const handleSelect = useCallback((name: string) => {
     onSelect(name);
     setOpen(false);
+    requestAnimationFrame(() => triggerRef.current?.focus({ preventScroll: true }));
   }, [onSelect]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (!open) {
       if (e.keyCode === KEY_CODES.ENTER) {
         e.preventDefault();
+        e.stopPropagation();
         handleToggle();
       }
       return;
@@ -173,6 +178,7 @@ function FilterDropdown({ categories, selectedGroup, onSelect }: FilterDropdownP
       e.preventDefault();
       e.stopPropagation();
       setOpen(false);
+      requestAnimationFrame(() => triggerRef.current?.focus({ preventScroll: true }));
     }
   }, [open, focusIdx, filtered, handleSelect, handleToggle]);
 
@@ -181,6 +187,7 @@ function FilterDropdown({ categories, selectedGroup, onSelect }: FilterDropdownP
   return (
     <div className="relative shrink-0" ref={containerRef} onKeyDown={handleKeyDown}>
       <button
+        ref={triggerRef}
         className={cn(
           'flex items-center gap-2 py-2.5 px-3.5 lg:py-3 lg:px-[18px] bg-surface border-2 border-surface-border rounded-lg text-sm lg:text-17 font-semibold text-[#ccc] whitespace-nowrap transition-all duration-150 w-full lg:w-[320px] tap-none',
           open && 'border-accent text-white'
@@ -223,6 +230,8 @@ function FilterDropdown({ categories, selectedGroup, onSelect }: FilterDropdownP
                 focusIdx === 0 && 'bg-surface-hover text-white outline-2 outline-accent outline-offset-[-2px]'
               )}
               data-filter-item
+              tabIndex={-1}
+              onFocus={() => setFocusIdx(0)}
               onClick={() => handleSelect('All')}
             >
               All categories
@@ -236,6 +245,8 @@ function FilterDropdown({ categories, selectedGroup, onSelect }: FilterDropdownP
                   focusIdx === i + 1 && 'bg-surface-hover text-white outline-2 outline-accent outline-offset-[-2px]'
                 )}
                 data-filter-item
+                tabIndex={-1}
+                onFocus={() => setFocusIdx(i + 1)}
                 onClick={() => handleSelect(cat.name)}
               >
                 <span className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{cat.name}</span>
@@ -315,6 +326,7 @@ export default function ChannelList({ contentType }: ChannelListProps) {
   const navigateToMovie = useAppStore((s) => s.navigateToMovie);
   const showToast = useAppStore((s) => s.showToastMessage);
 
+  const containerRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -517,7 +529,7 @@ export default function ChannelList({ contentType }: ChannelListProps) {
       if (focusZone === 'search') {
         setFocusZone('filter');
         requestAnimationFrame(() => {
-          const trigger = document.querySelector('[data-filter-trigger]') as HTMLElement | null;
+          const trigger = containerRef.current?.querySelector('[data-filter-trigger]') as HTMLElement | null;
           trigger?.focus();
         });
       } else if (focusZone === 'filter') {
@@ -547,7 +559,7 @@ export default function ChannelList({ contentType }: ChannelListProps) {
         } else {
           setFocusZone('filter');
           requestAnimationFrame(() => {
-            const trigger = document.querySelector('[data-filter-trigger]') as HTMLElement | null;
+            const trigger = containerRef.current?.querySelector('[data-filter-trigger]') as HTMLElement | null;
             trigger?.focus();
           });
         }
@@ -561,7 +573,7 @@ export default function ChannelList({ contentType }: ChannelListProps) {
         e.preventDefault();
         setFocusZone('filter');
         requestAnimationFrame(() => {
-          const trigger = document.querySelector('[data-filter-trigger]') as HTMLElement | null;
+          const trigger = containerRef.current?.querySelector('[data-filter-trigger]') as HTMLElement | null;
           trigger?.focus();
         });
         return;
@@ -722,12 +734,13 @@ export default function ChannelList({ contentType }: ChannelListProps) {
   }
 
   return (
-    <div className="flex flex-col gap-3 lg:gap-4 animate-fade-in" onKeyDown={handleKeyDown}>
+    <div ref={containerRef} className="flex flex-col gap-3 lg:gap-4 animate-fade-in" onKeyDown={handleKeyDown}>
       <h1 className="text-20 lg:text-28 font-bold">{label}</h1>
       <div className="flex flex-col lg:flex-row gap-2 lg:gap-3 items-stretch lg:items-start">
         <div className="flex gap-2.5 flex-1">
           <input
             ref={searchRef}
+            data-content-entry
             className="flex-1 py-2.5 px-3.5 lg:py-3 lg:px-4 text-base lg:text-20 bg-surface border-2 border-surface-border rounded-lg text-[#e8eaed] transition-colors duration-200 focus:border-accent placeholder:text-[#444]"
             type="text"
             placeholder={`Search ${label.toLowerCase()}...`}

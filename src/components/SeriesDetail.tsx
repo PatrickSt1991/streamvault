@@ -1,12 +1,12 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import type { Channel, SeriesInfo, Episode } from '../types';
 import { useChannelStore } from '../stores/channelStore';
 import { usePlayerStore } from '../stores/playerStore';
 import { useAppStore } from '../stores/appStore';
 import { getWatchProgress } from '../services/channel-service';
-import { KEY_CODES } from '../utils/keys';
 import { isMobile } from '../utils/platform';
 import { cn } from '../utils/cn';
+import FocusZone from './FocusZone';
 
 const MOBILE = isMobile();
 
@@ -24,7 +24,6 @@ export default function SeriesDetail({ series }: SeriesDetailProps) {
   const setChannel = usePlayerStore((s) => s.setChannel);
   const navigate = useAppStore((s) => s.navigate);
   const goBack = useAppStore((s) => s.goBack);
-  const episodeListRef = useRef<HTMLDivElement>(null);
 
   // Extract numeric series ID from prefixed ID (e.g., "series_12345" -> 12345)
   const seriesId = parseInt(series.id.replace('series_', ''), 10);
@@ -69,80 +68,9 @@ export default function SeriesDetail({ series }: SeriesDetailProps) {
     navigate('player');
   }, [info, series, setChannel, navigate]);
 
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (MOBILE) return;
-
-    if (e.keyCode === KEY_CODES.BACK || e.keyCode === 27) {
-      e.preventDefault();
-      e.stopPropagation();
-      goBack();
-      return;
-    }
-
-    if (e.keyCode === KEY_CODES.DOWN) {
-      e.preventDefault();
-      e.stopPropagation();
-      if (focusIndex < currentEpisodes.length - 1) {
-        setFocusIndex(focusIndex + 1);
-      }
-    } else if (e.keyCode === KEY_CODES.UP) {
-      e.preventDefault();
-      e.stopPropagation();
-      if (focusIndex > 0) {
-        setFocusIndex(focusIndex - 1);
-      }
-    } else if (e.keyCode === KEY_CODES.ENTER) {
-      e.preventDefault();
-      e.stopPropagation();
-      if (focusIndex >= 0 && focusIndex < currentEpisodes.length) {
-        handlePlayEpisode(currentEpisodes[focusIndex]);
-      }
-    } else if (e.keyCode === KEY_CODES.LEFT) {
-      e.preventDefault();
-      // Stop propagation so App's main-level LEFT handler doesn't steal
-      // focus back to the sidebar — this page owns LEFT for season nav.
-      e.stopPropagation();
-      if (info) {
-        const seasonNums = Object.keys(info.episodes).map(Number).sort((a, b) => a - b);
-        const idx = seasonNums.indexOf(selectedSeason);
-        if (idx > 0) {
-          setSelectedSeason(seasonNums[idx - 1]);
-          setFocusIndex(0);
-        }
-      }
-    } else if (e.keyCode === KEY_CODES.RIGHT) {
-      e.preventDefault();
-      e.stopPropagation();
-      if (info) {
-        const seasonNums = Object.keys(info.episodes).map(Number).sort((a, b) => a - b);
-        const idx = seasonNums.indexOf(selectedSeason);
-        if (idx < seasonNums.length - 1) {
-          setSelectedSeason(seasonNums[idx + 1]);
-          setFocusIndex(0);
-        }
-      }
-    }
-  }, [focusIndex, currentEpisodes, selectedSeason, info, handlePlayEpisode, goBack]);
-
-  // Focus current episode on render. Depend on currentEpisodes.length too
-  // so the effect re-runs once the fetch completes — otherwise the first
-  // render runs before episodes exist, focus silently misses, and the
-  // sidebar keeps the focus, swallowing all remote keys.
-  useEffect(() => {
-    if (MOBILE) return;
-    if (currentEpisodes.length === 0) return;
-    requestAnimationFrame(() => {
-      const list = episodeListRef.current;
-      if (!list) return;
-      const el = list.querySelector(`[data-ep-idx="${focusIndex}"]`) as HTMLElement | null;
-      el?.focus({ preventScroll: true });
-      el?.scrollIntoView({ block: 'nearest' });
-    });
-  }, [focusIndex, selectedSeason, currentEpisodes.length]);
-
   if (loading) {
     return (
-      <div className="p-4 lg:p-6 lg:px-8 overflow-y-auto h-full outline-hidden" onKeyDown={handleKeyDown}>
+      <div className="p-4 lg:p-6 lg:px-8 overflow-y-auto h-full outline-hidden">
         <div className="flex items-center justify-center h-[300px] text-20 text-[#888]">Loading series info...</div>
       </div>
     );
@@ -150,10 +78,10 @@ export default function SeriesDetail({ series }: SeriesDetailProps) {
 
   if (error || !info) {
     return (
-      <div className="p-4 lg:p-6 lg:px-8 overflow-y-auto h-full outline-hidden" onKeyDown={handleKeyDown}>
+      <FocusZone className="p-4 lg:p-6 lg:px-8 overflow-y-auto h-full outline-hidden" onBack={goBack}>
         <div className="flex items-center justify-center h-[300px] text-20 text-[#888]">{error || 'Series not found'}</div>
-        <button className="block mx-auto my-5 py-2.5 px-6 bg-[#333] text-white border-none rounded-md text-base cursor-pointer" onClick={goBack}>Go Back</button>
-      </div>
+        <button data-focusable tabIndex={0} className="block mx-auto my-5 py-2.5 px-6 bg-[#333] text-white border-none rounded-md text-base cursor-pointer" onClick={goBack}>Go Back</button>
+      </FocusZone>
     );
   }
 
@@ -170,7 +98,7 @@ export default function SeriesDetail({ series }: SeriesDetailProps) {
   }
 
   return (
-    <div className="p-4 lg:p-6 lg:px-8 overflow-y-auto h-full outline-hidden" onKeyDown={handleKeyDown} tabIndex={-1}>
+    <FocusZone className="p-4 lg:p-6 lg:px-8 overflow-y-auto h-full outline-hidden" onBack={goBack}>
       {/* Header */}
       <div className="flex flex-col gap-4 lg:flex-row lg:gap-7 lg:mb-7">
         <div className="w-full max-w-[200px] h-[280px] mx-auto lg:w-[220px] lg:min-w-[220px] lg:h-[320px] lg:max-w-none lg:mx-0 rounded-[10px] overflow-hidden bg-surface-border">
@@ -215,8 +143,9 @@ export default function SeriesDetail({ series }: SeriesDetailProps) {
               'py-1.5 px-3.5 lg:py-2 lg:px-[18px] text-[#b0b8c4] border-2 border-transparent rounded-lg text-13 lg:text-15 cursor-pointer whitespace-nowrap transition-all duration-150 hover:bg-[#252542] hover:text-white',
               sn === selectedSeason ? 'bg-[#252542] text-white border-brand-red' : 'bg-surface-border'
             )}
+            data-focusable
             onClick={() => { setSelectedSeason(sn); setFocusIndex(0); }}
-            tabIndex={MOBILE ? 0 : -1}
+            tabIndex={0}
           >
             Season {sn}
           </button>
@@ -224,7 +153,7 @@ export default function SeriesDetail({ series }: SeriesDetailProps) {
       </div>
 
       {/* Episode list */}
-      <div className="flex flex-col gap-1.5" ref={episodeListRef}>
+      <div className="flex flex-col gap-1.5">
         {currentEpisodes.length === 0 ? (
           <div className="p-10 text-center text-[#666] text-base">No episodes available for this season.</div>
         ) : (
@@ -245,7 +174,8 @@ export default function SeriesDetail({ series }: SeriesDetailProps) {
                 )}
                 data-focusable
                 data-ep-idx={idx}
-                tabIndex={MOBILE ? 0 : -1}
+                tabIndex={0}
+                onFocus={() => setFocusIndex(idx)}
                 onClick={() => handlePlayEpisode(ep)}
               >
                 <div className="w-full min-w-full h-[160px] rounded-t-lg rounded-b-none lg:w-[160px] lg:min-w-[160px] lg:h-[90px] lg:rounded-md overflow-hidden bg-surface-border relative">
@@ -274,6 +204,6 @@ export default function SeriesDetail({ series }: SeriesDetailProps) {
           })
         )}
       </div>
-    </div>
+    </FocusZone>
   );
 }
