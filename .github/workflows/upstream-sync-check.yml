@@ -13,6 +13,11 @@ concurrency:
   group: upstream-sync-check
   cancel-in-progress: true
 
+env:
+  # This repo is NOT a GitHub fork, so .parent is empty in the API.
+  # Set the upstream explicitly here (owner/repo).
+  UPSTREAM_REPO: christopherklint97/streamvault
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -25,19 +30,18 @@ jobs:
           set -euo pipefail
 
           FORK="${{ github.repository }}"
-
-          # Resolve the parent (upstream) repo + both default branches from the API.
-          read -r UPSTREAM UPSTREAM_BRANCH FORK_BRANCH < <(
-            gh api "repos/$FORK" \
-              --jq '[(.parent.full_name // ""), (.parent.default_branch // ""), .default_branch] | @tsv'
-          )
+          UPSTREAM="${UPSTREAM_REPO}"
 
           if [ -z "$UPSTREAM" ]; then
-            echo "::error::$FORK has no parent repository (is it actually a fork?)."
+            echo "::error::UPSTREAM_REPO is not set."
             exit 1
           fi
 
+          # Resolve default branches from the API (fork + upstream).
+          FORK_BRANCH="$(gh api "repos/$FORK" --jq '.default_branch')"
+          UPSTREAM_BRANCH="$(gh api "repos/$UPSTREAM" --jq '.default_branch')"
           UPSTREAM_OWNER="${UPSTREAM%%/*}"
+
           echo "Fork:     $FORK ($FORK_BRANCH)"
           echo "Upstream: $UPSTREAM ($UPSTREAM_BRANCH)"
 
@@ -105,7 +109,7 @@ jobs:
 
           WARN=""
           if [ "$STATUS" = "diverged" ]; then
-            WARN="> Note: branches have diverged ($AHEAD local commit(s)) â€” expect a merge, not a fast-forward."
+            WARN="> Note: branches have diverged ($AHEAD local commit(s)) — expect a merge, not a fast-forward."
           fi
 
           COMPARE_URL="https://github.com/$UPSTREAM/compare/$UPSTREAM_BRANCH...$OWNER:$FORK_BRANCH"
