@@ -14,8 +14,10 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # This repo is NOT a GitHub fork, so .parent is empty in the API.
-  # Set the upstream explicitly here (owner/repo).
+  # This repo is NOT a GitHub fork, so .parent is empty in the API,
+  # and the REST "compare" endpoint's cross-repo owner:branch shorthand
+  # only works within a real fork network anyway (hence the 404 we used
+  # to get). So this step uses plain git instead of `gh api .../compare`.
   UPSTREAM_REPO: christopherklint97/streamvault
 
 jobs:
@@ -37,21 +39,32 @@ jobs:
             exit 1
           fi
 
-          # Resolve default branches from the API (fork + upstream).
-          FORK_BRANCH="$(gh api "repos/$FORK" --jq '.default_branch')"
-          UPSTREAM_BRANCH="$(gh api "repos/$UPSTREAM" --jq '.default_branch')"
-          UPSTREAM_OWNER="${UPSTREAM%%/*}"
+          git clone --quiet "https://x-access-token:${GH_TOKEN}@github.com/$FORK.git" repo
+          cd repo
+
+          FORK_BRANCH="$(git remote show origin | sed -n '/HEAD branch/s/.*: //p')"
+
+          git remote add upstream "https://github.com/$UPSTREAM.git"
+          git fetch --quiet upstream
+          UPSTREAM_BRANCH="$(git remote show upstream | sed -n '/HEAD branch/s/.*: //p')"
 
           echo "Fork:     $FORK ($FORK_BRANCH)"
           echo "Upstream: $UPSTREAM ($UPSTREAM_BRANCH)"
 
-          # Compare fork branch (base) to upstream branch (head):
-          #   ahead_by  = commits upstream has that the fork is MISSING (= behind)
-          #   behind_by = commits the fork has that upstream does not (= local-only)
-          CMP="$(gh api "repos/$FORK/compare/$FORK_BRANCH...$UPSTREAM_OWNER:$UPSTREAM_BRANCH")"
-          STATUS="$(jq -r '.status'   <<<"$CMP")"
-          BEHIND="$(jq -r '.ahead_by' <<<"$CMP")"
-          AHEAD="$(jq -r '.behind_by' <<<"$CMP")"
+          # left  = commits only on the fork (local-only / "ahead")
+          # right = commits only on upstream (fork is missing them / "behind")
+          read -r AHEAD BEHIND <<< "$(git rev-list --left-right --count \
+            "origin/$FORK_BRANCH...upstream/$UPSTREAM_BRANCH")"
+
+          if [ "$AHEAD" -eq 0 ] && [ "$BEHIND" -eq 0 ]; then
+            STATUS="identical"
+          elif [ "$AHEAD" -eq 0 ]; then
+            STATUS="behind"
+          elif [ "$BEHIND" -eq 0 ]; then
+            STATUS="ahead"
+          else
+            STATUS="diverged"
+          fi
 
           echo "status=$STATUS behind=$BEHIND local-only=$AHEAD"
 
