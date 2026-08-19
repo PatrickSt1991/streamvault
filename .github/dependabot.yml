@@ -10,6 +10,14 @@ updates:
       all-dependencies:
         patterns:
           - "*"
+    ignore:
+      # typescript-eslint 8.x (latest) peers typescript ">=4.8.4 <6.1.0".
+      # TS 7 -- the native port -- got swept into the all-dependencies group,
+      # auto-merged, and broke `npm ci` with ERESOLVE, leaving CI red from
+      # 2026-07-28 until 2026-08-19. Hold the 6.x line until typescript-eslint
+      # ships TS 7 support, then drop this ignore and bump both together.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: npm
     directory: /server
