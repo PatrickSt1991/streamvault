@@ -69,7 +69,10 @@ export async function requestStream(
     const resp: Dispatcher.ResponseData = await request(currentUrl, {
       method: 'GET',
       headers,
-      maxRedirections: 0,
+      // undici v8 removed maxRedirections from request options (it moved to
+      // the redirect interceptor). No interceptor is installed on streamAgent,
+      // so redirects are not followed automatically — which is what the manual
+      // loop below wants. The old `maxRedirections: 0` just restated that default.
       headersTimeout: timeoutMs,
       bodyTimeout: 0,
     });
