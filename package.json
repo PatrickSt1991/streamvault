@@ -36,7 +36,7 @@
     "globals": "17.11.0",
     "happy-dom": "^20.11.2",
     "postcss": "^8.5.26",
-    "postcss-preset-env": "^11.3.2",
+    "postcss-preset-env": "^11.4.0",
     "sharp": "0.35.3",
     "tailwindcss": "^4.2.1",
     "terser": "^5.50.0",
