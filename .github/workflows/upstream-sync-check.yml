@@ -18,7 +18,12 @@ env:
   # and the REST "compare" endpoint's cross-repo owner:branch shorthand
   # only works within a real fork network anyway (hence the 404 we used
   # to get). So this step uses plain git instead of `gh api .../compare`.
+  # For the same reason there is no usable /compare/ web URL between the
+  # two repos -- we link upstream's commit list and inline the missing
+  # commits instead.
   UPSTREAM_REPO: christopherklint97/streamvault
+  # How many missing upstream commits to list in the issue body.
+  MAX_LISTED: 20
 
 jobs:
   check:
@@ -77,6 +82,21 @@ jobs:
             echo "ahead=$AHEAD"
           } >> "$GITHUB_OUTPUT"
 
+          # Inline the commits we are missing. There is no working cross-repo
+          # /compare/ URL for non-fork repos, so the list IS the diff view.
+          {
+            echo "missing<<__MISSING_EOF__"
+            if [ "$BEHIND" -gt 0 ]; then
+              git log --max-count="$MAX_LISTED" \
+                --format="- [\`%h\`](https://github.com/$UPSTREAM/commit/%H) %s" \
+                "origin/$FORK_BRANCH..upstream/$UPSTREAM_BRANCH"
+              if [ "$BEHIND" -gt "$MAX_LISTED" ]; then
+                echo "- _…and $((BEHIND - MAX_LISTED)) more._"
+              fi
+            fi
+            echo "__MISSING_EOF__"
+          } >> "$GITHUB_OUTPUT"
+
           {
             echo "### Upstream sync check"
             echo ""
@@ -92,6 +112,10 @@ jobs:
       - name: Open / update / close tracking issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # `gh` resolves the target repo from the git remote, and this job
+          # never checks out the repo -- without GH_REPO every `gh issue`
+          # call dies with "fatal: not a git repository".
+          GH_REPO: ${{ github.repository }}
           OWNER: ${{ github.repository_owner }}
           UPSTREAM: ${{ steps.compare.outputs.upstream }}
           UPSTREAM_BRANCH: ${{ steps.compare.outputs.upstream_branch }}
@@ -99,11 +123,20 @@ jobs:
           STATUS: ${{ steps.compare.outputs.status }}
           BEHIND: ${{ steps.compare.outputs.behind }}
           AHEAD: ${{ steps.compare.outputs.ahead }}
+          MISSING: ${{ steps.compare.outputs.missing }}
         run: |
           set -euo pipefail
 
           LABEL="upstream-sync"
           TITLE="Fork is behind upstream ($UPSTREAM)"
+
+          # Requires Issues to be enabled on the repo. If someone turns them
+          # off again, say so plainly instead of failing on a confusing
+          # "not a git repository" further down.
+          if [ "$(gh api "repos/$GH_REPO" --jq .has_issues)" != "true" ]; then
+            echo "::error::Issues are disabled on $GH_REPO, so the tracking issue cannot be managed. Enable them under Settings -> Features -> Issues."
+            exit 1
+          fi
 
           gh label create "$LABEL" --color FBCA04 \
             --description "Fork out of sync with upstream" 2>/dev/null || true
@@ -125,8 +158,6 @@ jobs:
             WARN="> Note: branches have diverged ($AHEAD local commit(s)) — expect a merge, not a fast-forward."
           fi
 
-          COMPARE_URL="https://github.com/$UPSTREAM/compare/$UPSTREAM_BRANCH...$OWNER:$FORK_BRANCH"
-
           cat > body.md <<EOF
           \`${GITHUB_REPOSITORY}\` (\`$FORK_BRANCH\`) is **$BEHIND commit(s) behind** upstream \`$UPSTREAM\` (\`$UPSTREAM_BRANCH\`).
 
@@ -134,7 +165,11 @@ jobs:
           - Behind upstream by: **$BEHIND**
           - Local-only commits: **$AHEAD**
 
-          [View the diff on GitHub]($COMPARE_URL)
+          ## Upstream commits not in this repo
+
+          $MISSING
+
+          Full upstream history: <https://github.com/$UPSTREAM/commits/$UPSTREAM_BRANCH>
 
           ## Sync your fork
 
