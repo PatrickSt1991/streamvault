@@ -72,6 +72,43 @@ Useful server environment variables:
 - `STREAMVAULT_PROXY_ALLOWED_HOSTS` - comma-separated extra proxy host allowlist
 - `STREAMVAULT_ALLOWED_ORIGINS` - comma-separated explicit CORS origins
 
+## VPN-routed Xtream upstream (optional)
+
+VPN routing is fully opt-in: the normal `docker compose up -d --build` command and base `docker-compose.yml` continue to use direct host egress. The VPN is enabled only when `docker-compose.vpn.yml` is explicitly included.
+
+StreamVault can run inside a [Gluetun](https://github.com/qdm12/gluetun) network namespace so every Xtream API and media request exits through a VPN while clients keep using the same StreamVault URL (`http://<server>:3002`). This includes API sync, EPG, artwork redirects, live streams, VOD, series episodes, and recordings. Gluetun's firewall is fail-closed, so a dropped tunnel cannot silently leak upstream traffic through the host connection.
+
+WireGuard is recommended for low overhead and high-bitrate/4K playback. The default VPN location is Finland:
+
+```bash
+cp .env.vpn.example .env
+chmod 600 .env
+# Edit .env with credentials from a Gluetun-supported VPN provider.
+# Keep VPN_TYPE=wireguard and VPN_SERVER_COUNTRIES=Finland where supported.
+
+docker compose -f docker-compose.yml -f docker-compose.vpn.yml up -d --build
+```
+
+Verify the tunnel and unchanged client endpoint:
+
+```bash
+# Gluetun must be healthy and report a Finnish exit location.
+docker compose -f docker-compose.yml -f docker-compose.vpn.yml ps
+docker exec streamvault-vpn wget -qO- https://ipinfo.io/json
+
+# The PWA/API stays available at the original address.
+curl --fail http://127.0.0.1:3002/api/health
+```
+
+Use credentials generated specifically for the provider's manual WireGuard/OpenVPN setup; they may differ from its normal app login. `.env` is gitignored. Do not add a direct `ports` mapping back to the `server` service in VPN mode, because the port belongs to Gluetun's network namespace.
+
+To return to direct egress:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.vpn.yml down
+docker compose up -d --build
+```
+
 ## Tizen signing
 
 `npm run sign` signs `dist/` with OpenSSL rather than bundling vulnerable JS certificate parsers. Provide certificate paths via `CERT_AUTHOR_P12` and `CERT_DIST_P12`, or place them at `certs/author.p12` and `certs/distributor.p12`. `CERT_AUTHOR_PASSWORD` and `CERT_DIST_PASSWORD` are required.

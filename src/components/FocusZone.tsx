@@ -4,6 +4,15 @@ import { cn } from '../utils/cn';
 
 type Direction = 'up' | 'down' | 'left' | 'right';
 
+const FOCUSABLE_SELECTOR = [
+  '[data-focusable]:not([disabled]):not([aria-hidden="true"])',
+  'button:not([disabled]):not([aria-hidden="true"])',
+  'input:not([disabled]):not([aria-hidden="true"])',
+  'textarea:not([disabled]):not([aria-hidden="true"])',
+  'select:not([disabled]):not([aria-hidden="true"])',
+  'a[href]:not([aria-hidden="true"])',
+].join(',');
+
 /**
  * Spatial navigation: find the nearest [data-focusable] element
  * in a given direction from the currently focused element.
@@ -29,7 +38,7 @@ function findNearest(
 ): HTMLElement | null {
   const rect = current.getBoundingClientRect();
 
-  const candidates = container.querySelectorAll('[data-focusable]');
+  const candidates = container.querySelectorAll(FOCUSABLE_SELECTOR);
   let best: HTMLElement | null = null;
   let bestScore = Infinity;
 
@@ -95,9 +104,9 @@ function isTextInput(el: HTMLElement): boolean {
   if (el.tagName === 'TEXTAREA') return true;
   if (el.tagName === 'INPUT') {
     const type = (el as HTMLInputElement).type;
-    return type === 'text' || type === 'search' || type === 'url' ||
-           type === 'email' || type === 'password' || type === 'tel' ||
-           type === 'number';
+    return type !== 'button' && type !== 'submit' && type !== 'reset' &&
+           type !== 'checkbox' && type !== 'radio' && type !== 'range' &&
+           type !== 'color' && type !== 'file';
   }
   return el.isContentEditable;
 }
@@ -107,6 +116,8 @@ interface FocusZoneProps {
   className?: string;
   /** Called on ENTER key with the focused element. Return true to prevent default handling. */
   onEnter?: (el: HTMLElement) => boolean | void;
+  /** Called for the TV Back key or Escape. */
+  onBack?: () => void;
 }
 
 /**
@@ -122,7 +133,7 @@ interface FocusZoneProps {
  * - Text inputs: LEFT/RIGHT are passed through for cursor movement
  * - ENTER: clicks the focused element
  */
-export default function FocusZone({ children, className, onEnter }: FocusZoneProps) {
+export default function FocusZone({ children, className, onEnter, onBack }: FocusZoneProps) {
   const ref = useRef<HTMLDivElement>(null);
 
   // When the container itself receives focus, focus the first (or last focused) item
@@ -131,11 +142,11 @@ export default function FocusZone({ children, className, onEnter }: FocusZonePro
     const container = ref.current;
     if (!container) return;
 
-    // Try to find a previously focused item
-    const lastFocused = container.querySelector('[data-focusable]:focus') as HTMLElement | null;
-    if (lastFocused) return;
+    // Keep focus if one of the zone's children is already active.
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active !== container && container.contains(active)) return;
 
-    const first = container.querySelector('[data-focusable]') as HTMLElement | null;
+    const first = container.querySelector(FOCUSABLE_SELECTOR) as HTMLElement | null;
     if (first) {
       first.focus({ preventScroll: true });
     }
@@ -150,6 +161,13 @@ export default function FocusZone({ children, className, onEnter }: FocusZonePro
       if (!active || !container.contains(active)) return;
       // Don't handle if focus is on the container itself
       if (active === container) return;
+
+      if ((e.keyCode === KEY_CODES.BACK || e.keyCode === 27) && onBack) {
+        e.preventDefault();
+        e.stopPropagation();
+        onBack();
+        return;
+      }
 
       // ENTER: click the focused element
       if (e.keyCode === KEY_CODES.ENTER) {
@@ -194,7 +212,7 @@ export default function FocusZone({ children, className, onEnter }: FocusZonePro
       // If no element found, don't preventDefault — let it bubble.
       // LEFT at left edge → bubbles to App.tsx → focuses sidebar.
     },
-    [onEnter],
+    [onEnter, onBack],
   );
 
   // Auto-focus first item on mount if nothing else in the app has focus
@@ -211,7 +229,7 @@ export default function FocusZone({ children, className, onEnter }: FocusZonePro
       const focusLost = !active || active === document.body || active === container;
       const focusOnDeadElement = active && active !== document.body && !document.body.contains(active);
       if (focusLost || focusOnDeadElement) {
-        const first = container.querySelector('[data-focusable]') as HTMLElement | null;
+        const first = container.querySelector(FOCUSABLE_SELECTOR) as HTMLElement | null;
         first?.focus({ preventScroll: true });
       }
     });
@@ -222,6 +240,7 @@ export default function FocusZone({ children, className, onEnter }: FocusZonePro
   return (
     <div
       ref={ref}
+      data-focus-zone
       tabIndex={0}
       className={cn('outline-hidden', className)}
       onFocus={handleFocus}

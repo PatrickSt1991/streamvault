@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "node --import tsx src/index.ts",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "audit:prod": "npm audit --omit=dev"
   },
@@ -20,6 +21,7 @@
   "devDependencies": {
     "@types/better-sqlite3": "9.6.0",
     "@types/cors": "2.8.19",
-    "@types/express": "5.0.6"
+    "@types/express": "5.0.6",
+    "vitest": "^4.1.0"
   }
 }

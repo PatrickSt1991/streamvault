@@ -8,7 +8,6 @@ import { TizenPlayer } from '../services/avplay';
 import { saveWatchProgress, getWatchProgress, getSubtitlesEnabled, setSubtitlesEnabled } from '../services/channel-service';
 import { clientLogger as log } from '../utils/logger';
 import { useAppStore } from '../stores/appStore';
-import { isTizen } from '../utils/platform';
 
 const toast = (msg: string) => useAppStore.getState().showToastMessage(msg);
 
@@ -145,26 +144,17 @@ function stopPlayback() {
 // ---------------------------------------------------------------------------
 
 /**
- * Build a stream URL for the player.
+ * Build a server-proxied stream URL for the player.
  *
- * On Tizen TVs for VOD/series episodes, we bypass the server proxy entirely
- * and let AVPlay hit the upstream Xtream URL directly. The TV has no CORS,
- * the proxy adds a hop on the Pi 5, and VOD doesn't need ffmpeg subtitle
- * stripping (only live MPEG-TS embeds DVB/CEA captions that need stripping).
- * Live TV always goes through the proxy on every platform.
+ * Every platform, including Tizen AVPlay, uses the StreamVault proxy. Keeping
+ * the client-facing path uniform ensures Xtream API and media traffic follows
+ * the server's configured egress route (including the optional VPN namespace)
+ * without exposing provider credentials or routing details to clients.
  *
- * Mobile/desktop browsers must use the proxy (CORS).
- *
- * @param isLive whether this stream is live TV (forces proxy + ffmpeg path)
- * @param directUrl the upstream URL (required for episodes, also used for Tizen VOD bypass)
+ * @param directUrl the upstream URL required for episodes not stored in the DB
  */
-export function getStreamUrl(channelId: string, directUrl?: string, keepSubs?: boolean, isLive?: boolean): string {
+export function getStreamUrl(channelId: string, directUrl?: string, keepSubs?: boolean, _isLive?: boolean): string {
   const apiBaseUrl = useChannelStore.getState().apiBaseUrl;
-
-  if (isTizen() && !isLive && directUrl) {
-    log.info('Tizen VOD bypass: streaming directly from upstream (no proxy hop)');
-    return directUrl;
-  }
 
   const params: string[] = [];
   if (directUrl && channelId.startsWith('episode_')) {
