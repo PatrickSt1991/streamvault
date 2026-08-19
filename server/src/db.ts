@@ -3,15 +3,19 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { logger } from './logger.js';
+import {
+  createAtomicBackup,
+  restoreLatestValidBackup,
+  validateDatabaseFile,
+  validateOpenDatabase,
+} from './db-lifecycle.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const DB_PATH = path.join(DATA_DIR, 'streamvault.db');
+const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
-
-logger.info(`Opening database at ${DB_PATH}`);
-let db = openDatabase();
 
 function openDatabase(): InstanceType<typeof Database> {
   const instance = new Database(DB_PATH);
@@ -19,36 +23,34 @@ function openDatabase(): InstanceType<typeof Database> {
   return instance;
 }
 
-// Integrity check — if corrupted, quarantine and recreate.
-// NEVER delete user data: rename to .corrupt-<ts> so the operator can recover.
-function quarantineCorruptDb(reason: string): void {
-  try { db.close(); } catch { /* ignore */ }
+function quarantineDatabaseFiles(reason: string): void {
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   for (const suffix of ['', '-shm', '-wal']) {
     const file = DB_PATH + suffix;
-    if (fs.existsSync(file)) {
-      const quarantined = `${file}.corrupt-${ts}`;
-      try {
-        fs.renameSync(file, quarantined);
-        logger.error(`Quarantined corrupt DB file: ${file} -> ${quarantined}`);
-      } catch (e) {
-        logger.error(`Failed to quarantine ${file}: ${e instanceof Error ? e.message : e}`);
-      }
-    }
+    if (!fs.existsSync(file)) continue;
+    const quarantined = `${file}.corrupt-${ts}`;
+    fs.renameSync(file, quarantined);
+    logger.error(`Quarantined corrupt DB file: ${file} -> ${quarantined}`);
   }
-  logger.error(`Creating fresh database after corruption. Reason: ${reason}`);
-  db = openDatabase();
+  logger.error(`Database quarantined. Reason: ${reason}`);
 }
 
-try {
-  const result = db.pragma('integrity_check') as { integrity_check: string }[];
-  if (result[0]?.integrity_check !== 'ok') {
-    quarantineCorruptDb(`integrity_check returned: ${JSON.stringify(result)}`);
+logger.info(`Opening database at ${DB_PATH}`);
+const existingDatabase = fs.existsSync(DB_PATH) && fs.statSync(DB_PATH).size > 0;
+let db = openDatabase();
+
+if (existingDatabase) {
+  const validation = validateOpenDatabase(db);
+  if (!validation.ok) {
+    try { db.close(); } catch { /* ignore close errors while recovering */ }
+    quarantineDatabaseFiles(validation.error || 'Database validation failed');
+    const restored = restoreLatestValidBackup(DB_PATH, BACKUP_DIR);
+    if (restored) logger.warn(`Restored database from latest valid backup: ${restored}`);
+    else logger.error('No valid backup found; creating a fresh database');
+    db = openDatabase();
   } else {
     logger.info('Database integrity check passed');
   }
-} catch (err) {
-  quarantineCorruptDb(`integrity_check threw: ${err instanceof Error ? err.message : err}`);
 }
 
 db.exec(`
@@ -173,7 +175,6 @@ db.exec(`
 
 // ---------- Lifecycle / backup helpers ----------
 
-const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 const BACKUP_RETENTION = 7;
 
 export function closeDatabase(): void {
@@ -190,19 +191,37 @@ export function closeDatabase(): void {
   }
 }
 
+export function getDatabaseHealth(): { ok: boolean; error?: string } {
+  return validateOpenDatabase(db);
+}
+
 export function backupDatabase(): string | null {
   try {
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
     const stamp = new Date().toISOString().slice(0, 10);
     const target = path.join(BACKUP_DIR, `streamvault-${stamp}.db`);
-    // VACUUM INTO refuses to overwrite — drop existing same-day backup first
-    if (fs.existsSync(target)) fs.unlinkSync(target);
-    db.exec(`VACUUM INTO '${target.replace(/'/g, "''")}'`);
+    // Build and validate a temporary snapshot, then atomically replace today's
+    // backup. A failed VACUUM must never erase the last known-good snapshot.
+    createAtomicBackup(db, target);
     logger.info(`Database backed up to ${target}`);
 
-    // Retention: keep newest BACKUP_RETENTION files
-    const files = fs.readdirSync(BACKUP_DIR)
-      .filter(f => f.startsWith('streamvault-') && f.endsWith('.db'))
+    // Invalid snapshots (including legacy zero-byte files) are not backups and
+    // must not displace valid files from retention.
+    const datedFiles = fs.readdirSync(BACKUP_DIR)
+      .filter(f => f.startsWith('streamvault-') && f.endsWith('.db'));
+    const validFiles: string[] = [];
+    for (const file of datedFiles) {
+      const fullPath = path.join(BACKUP_DIR, file);
+      if (validateDatabaseFile(fullPath).ok) {
+        validFiles.push(file);
+      } else {
+        fs.unlinkSync(fullPath);
+        logger.warn(`Pruned invalid backup ${file}`);
+      }
+    }
+
+    // Retention: keep the newest BACKUP_RETENTION validated snapshots.
+    const files = validFiles
       .map(f => ({ f, mtime: fs.statSync(path.join(BACKUP_DIR, f)).mtimeMs }))
       .sort((a, b) => b.mtime - a.mtime);
     for (const old of files.slice(BACKUP_RETENTION)) {
@@ -353,7 +372,15 @@ export function getChannelsByIds(ids: string[]): DBChannel[] {
   return db.prepare(`SELECT * FROM channels WHERE id IN (${placeholders})`).all(...ids) as DBChannel[];
 }
 
-export function getChannels(): DBChannel[] {
+export function getChannels(limit?: number, cursorSort?: number, cursorName?: string): DBChannel[] {
+  if (limit !== undefined && cursorSort !== undefined && cursorName !== undefined) {
+    return db.prepare(
+      'SELECT * FROM channels WHERE sort_order > ? OR (sort_order = ? AND name > ?) ORDER BY sort_order, name LIMIT ?'
+    ).all(cursorSort, cursorSort, cursorName, limit) as DBChannel[];
+  }
+  if (limit !== undefined) {
+    return db.prepare('SELECT * FROM channels ORDER BY sort_order, name LIMIT ?').all(limit) as DBChannel[];
+  }
   return db.prepare('SELECT * FROM channels ORDER BY sort_order, name').all() as DBChannel[];
 }
 
@@ -636,11 +663,13 @@ export function getRecordings(filter?: { status?: string; limit?: number; offset
     params.push(filter.status);
   }
   sql += ' ORDER BY start_time DESC';
-  if (filter?.limit) {
+  if (filter?.limit !== undefined) {
     sql += ' LIMIT ?';
     params.push(filter.limit);
+  } else if (filter?.offset !== undefined) {
+    sql += ' LIMIT -1';
   }
-  if (filter?.offset) {
+  if (filter?.offset !== undefined) {
     sql += ' OFFSET ?';
     params.push(filter.offset);
   }

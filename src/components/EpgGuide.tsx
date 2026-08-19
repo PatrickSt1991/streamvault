@@ -7,6 +7,7 @@ import { useRecordingStore } from '../stores/recordingStore';
 import { isMobile } from '../utils/platform';
 import { cn } from '../utils/cn';
 import { KEY_CODES } from '../utils/keys';
+import FocusZone from './FocusZone';
 
 interface EpgProgram {
   channelId: string;
@@ -65,7 +66,10 @@ function formatDate(d: Date): string {
 function GuideFilterDropdown({ categories, selectedGroup, onSelect }: { categories: Category[]; selectedGroup: string | null; onSelect: (group: string) => void }) {
   const [open, setOpen] = useState(false);
   const [filterQuery, setFilterQuery] = useState('');
+  const [focusIdx, setFocusIdx] = useState(-1);
   const inputRef = useRef<HTMLInputElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const filtered = useMemo(() => {
@@ -95,6 +99,7 @@ function GuideFilterDropdown({ categories, selectedGroup, onSelect }: { categori
     setOpen(prev => {
       if (!prev) {
         setFilterQuery('');
+        setFocusIdx(-1);
       }
       return !prev;
     });
@@ -103,13 +108,59 @@ function GuideFilterDropdown({ categories, selectedGroup, onSelect }: { categori
   const handleSelect = useCallback((name: string) => {
     onSelect(name);
     setOpen(false);
+    requestAnimationFrame(() => triggerRef.current?.focus({ preventScroll: true }));
   }, [onSelect]);
+
+  useEffect(() => {
+    if (!open || focusIdx < 0) return;
+    const items = listRef.current?.querySelectorAll('[data-guide-filter-item]') as NodeListOf<HTMLElement> | undefined;
+    const item = items?.[focusIdx];
+    if (!item) return;
+    item.focus({ preventScroll: true });
+    item.scrollIntoView({ block: 'nearest' });
+  }, [focusIdx, open]);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (!open) {
+      if (e.keyCode === KEY_CODES.ENTER) {
+        e.preventDefault();
+        e.stopPropagation();
+        handleToggle();
+      }
+      return;
+    }
+    if (e.keyCode === KEY_CODES.DOWN) {
+      e.preventDefault();
+      e.stopPropagation();
+      setFocusIdx(prev => Math.min(prev + 1, filtered.length));
+    } else if (e.keyCode === KEY_CODES.UP) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (focusIdx <= 0) {
+        setFocusIdx(-1);
+        inputRef.current?.focus({ preventScroll: true });
+      } else {
+        setFocusIdx(prev => prev - 1);
+      }
+    } else if (e.keyCode === KEY_CODES.ENTER) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (focusIdx === 0) handleSelect('All');
+      else if (focusIdx > 0 && focusIdx <= filtered.length) handleSelect(filtered[focusIdx - 1].name);
+    } else if (e.keyCode === KEY_CODES.BACK || e.keyCode === 27) {
+      e.preventDefault();
+      e.stopPropagation();
+      setOpen(false);
+      requestAnimationFrame(() => triggerRef.current?.focus({ preventScroll: true }));
+    }
+  }, [open, focusIdx, filtered, handleSelect, handleToggle]);
 
   const label = selectedGroup && selectedGroup !== 'All' ? selectedGroup : 'All categories';
 
   return (
-    <div className="relative shrink-0" ref={containerRef}>
+    <div className="relative shrink-0" ref={containerRef} onKeyDown={handleKeyDown}>
       <button
+        ref={triggerRef}
         className={cn(
           'flex items-center gap-2 py-2 px-3 lg:py-2.5 lg:px-3.5 bg-surface border-2 border-surface-border rounded-lg text-sm font-semibold text-[#ccc] whitespace-nowrap transition-all duration-150 max-w-[220px] lg:max-w-[320px] tap-none',
           open && 'border-accent text-white'
@@ -128,14 +179,22 @@ function GuideFilterDropdown({ categories, selectedGroup, onSelect }: { categori
             type="text"
             placeholder="Search categories..."
             value={filterQuery}
-            onChange={e => setFilterQuery(e.target.value)}
+            onChange={e => { setFilterQuery(e.target.value); setFocusIdx(-1); }}
+            onKeyDown={(e) => {
+              if (e.keyCode === KEY_CODES.DOWN || e.keyCode === KEY_CODES.UP || e.keyCode === KEY_CODES.ENTER || e.keyCode === KEY_CODES.BACK) {
+                handleKeyDown(e);
+              }
+            }}
           />
-          <div className="max-h-[50dvh] overflow-y-auto p-1 [-webkit-overflow-scrolling:touch]">
+          <div className="max-h-[50dvh] overflow-y-auto p-1 [-webkit-overflow-scrolling:touch]" ref={listRef}>
             <button
               className={cn(
                 'flex items-center gap-2 w-full py-3 px-3.5 bg-transparent border-none rounded-md text-left text-sm text-[#aaa] cursor-pointer transition-colors duration-100 tap-none hover:bg-surface-hover hover:text-white',
                 (selectedGroup === 'All' || !selectedGroup) && 'text-accent'
               )}
+              data-guide-filter-item
+              tabIndex={-1}
+              onFocus={() => setFocusIdx(0)}
               onClick={() => handleSelect('All')}
             >
               All categories
@@ -147,6 +206,9 @@ function GuideFilterDropdown({ categories, selectedGroup, onSelect }: { categori
                   'flex items-center gap-2 w-full py-3 px-3.5 bg-transparent border-none rounded-md text-left text-sm text-[#aaa] cursor-pointer transition-colors duration-100 tap-none hover:bg-surface-hover hover:text-white',
                   selectedGroup === cat.name && 'text-accent'
                 )}
+                data-guide-filter-item
+                tabIndex={-1}
+                onFocus={() => setFocusIdx(filtered.indexOf(cat) + 1)}
                 onClick={() => handleSelect(cat.name)}
               >
                 <span className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{cat.name}</span>
@@ -328,53 +390,12 @@ export default function EpgGuide() {
     return Object.values(epgData).some(programs => programs.length > 0);
   }, [epgData]);
 
-  // TV: arrow keys scroll the guide grid (no per-cell focus management)
-  const containerRef = useRef<HTMLDivElement>(null);
-  const handleGridKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (MOBILE) return;
-    const grid = gridRef.current;
-    if (!grid) return;
-    const stepX = HOUR_WIDTH;
-    const stepY = ROW_HEIGHT * 2;
-    switch (e.keyCode) {
-      case KEY_CODES.DOWN:
-        e.preventDefault();
-        grid.scrollTop += stepY;
-        break;
-      case KEY_CODES.UP:
-        e.preventDefault();
-        grid.scrollTop -= stepY;
-        break;
-      case KEY_CODES.RIGHT:
-        e.preventDefault();
-        grid.scrollLeft += stepX;
-        break;
-      case KEY_CODES.LEFT:
-        e.preventDefault();
-        grid.scrollLeft -= stepX;
-        break;
-    }
-  }, []);
-
-  // Auto-focus the guide container on mount so arrow-key scrolling works
-  // immediately when arriving here from the sidebar
-  useEffect(() => {
-    if (MOBILE) return;
-    requestAnimationFrame(() => containerRef.current?.focus({ preventScroll: true }));
-  }, []);
-
   if (loading) {
     return <div className="p-3 lg:p-5 h-full flex flex-col overflow-hidden"><div className="text-[#888] text-center py-[60px]">Loading guide...</div></div>;
   }
 
   return (
-    <div
-      ref={containerRef}
-      className="p-3 lg:p-5 h-full flex flex-col overflow-hidden outline-hidden"
-      onKeyDown={handleGridKeyDown}
-      tabIndex={MOBILE ? -1 : 0}
-      data-focusable
-    >
+    <FocusZone className="p-3 lg:p-5 h-full flex flex-col overflow-hidden outline-hidden">
       <div className="flex items-center gap-2.5 lg:gap-5 mb-4 shrink-0 flex-wrap lg:flex-nowrap">
         <h1 className="text-20 lg:text-28 font-bold">TV Guide</h1>
         <GuideFilterDropdown
@@ -495,6 +516,6 @@ export default function EpgGuide() {
           )}
         </div>
       )}
-    </div>
+    </FocusZone>
   );
 }

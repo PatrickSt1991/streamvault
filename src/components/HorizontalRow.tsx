@@ -2,6 +2,9 @@ import { useRef, useEffect, useState, useCallback } from 'react';
 import type { Channel } from '../types';
 import { prefetchImages } from '../utils/image-pool';
 import ChannelCard from './ChannelCard';
+import { isMobile } from '../utils/platform';
+
+const MOBILE = isMobile();
 
 interface HorizontalRowProps {
   title: string;
@@ -60,7 +63,9 @@ export default function HorizontalRow({ title, channels, onSelect }: HorizontalR
   if (channels.length === 0) return null;
 
   // For small lists, render all (no virtualization overhead needed)
-  const useVirtualization = channels.length > VISIBLE_COUNT + BUFFER * 2;
+  // Keep every card mounted on TV so remote focus can reach the full row.
+  // Mobile uses touch scrolling and can retain the lighter virtualized window.
+  const useVirtualization = MOBILE && channels.length > VISIBLE_COUNT + BUFFER * 2;
 
   return (
     <div className="flex flex-col gap-2">
